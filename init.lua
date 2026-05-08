@@ -2,12 +2,11 @@
 require("hs.ipc")    -- 防止 error: can't access Hammerspoon message port Hammerspoon
 
 require("modules.doubao_speak")
---require("modules.doubao_speak_github")
 require("modules.sleep_mute")
 require("modules.toggle_apps")
 require("modules.layouts")
--- require("modules.workflows")
 test = require("modules.test")
+require("modules.unlock_watcher").start()
 
 -- ⭐ 暴露工作流为全局变量，方便 CLI 调用
 workflow = {
