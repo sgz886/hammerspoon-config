@@ -5,7 +5,7 @@ require("modules.doubao_speak")
 --require("modules.doubao_speak_github")
 require("modules.sleep_mute")
 require("modules.toggle_apps")
-require("modules.resize_apps")
+require("modules.layouts")
 -- require("modules.workflows")
 test = require("modules.test")
 
