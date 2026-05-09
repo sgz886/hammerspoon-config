@@ -4,6 +4,7 @@
 -- ─────────────────────────────────────────────────────────
 
 local mwinit = require("modules.mwinit")
+local LOGIN_MWINIT_DELAY = 60
 
 local M = {}
 
@@ -17,6 +18,7 @@ function M.start()
         return
     end
 
+    -- 输出所有的MacOS events
     watcher = hs.caffeinate.watcher.new(function(event)
         -- 事件 ID 转换成可读名字（调试用）
         local eventName = "unknown"
@@ -30,8 +32,7 @@ function M.start()
             eventName, event))
 
         if event == hs.caffeinate.watcher.screensDidUnlock then
-            -- 延迟一点再跑，让系统稳定
-            hs.timer.doAfter(5, function()
+            hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
                 mwinit.runOncePerDay()
             end)
         end

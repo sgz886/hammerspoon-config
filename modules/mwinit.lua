@@ -34,11 +34,10 @@ function M.mwinit()
     --    `write text` 是发送到 current session 的命令
     local applescript
     print("start")
-    print(string.format("wasRunning = %s", wasRunning))
+    print(string.format("iterm was Running = %s", wasRunning))
     if wasRunning then
         applescript = string.format([[
             tell application "iTerm"
-                activate
                 create window with default profile
                 tell current session of current window
                     write text "exec %s"
@@ -49,8 +48,6 @@ function M.mwinit()
         -- 冷启动：activate 会自动创建一个窗口，不需要再 create
         applescript = string.format([[
             tell application "iTerm"
-                activate
-                -- 等一下让默认窗口建好
                 delay 1
                 tell current session of current window
                     write text "exec %s"
@@ -90,18 +87,12 @@ function M.runOncePerDay()
     M.mwinit()
     return true
 end
---- 调试用：清除"今日已运行"标记，让下次解锁重新触发
-function M.resetDailyFlag()
-    hs.settings.clear(SETTINGS_KEY)
-    print("[mwinit] 已清除每日标记")
-end
 
 --- 调试用：清除"今日已运行"标记，让下次解锁重新触发
 function M.resetDailyFlag()
     hs.settings.clear(SETTINGS_KEY)
     print("[mwinit] 已清除每日标记")
 end
-
 
 
 return M
