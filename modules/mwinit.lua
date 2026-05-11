@@ -6,7 +6,7 @@
 local M = {}
 
 -- 脚本路径（展开 ~ 到真实 home 目录）
-local SCRIPT_PATH = os.getenv("HOME") .. "/bin/mwinit-auto.sh"
+local SCRIPT_PATH = os.getenv("HOME") .. "/.hammerspoon/modules/mwinit-auto.sh"
 
 -- hs.settings 里存储"上次自动触发日期"的 key
 local SETTINGS_KEY = "mwinit.lastAutoRunDate"

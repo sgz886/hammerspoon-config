@@ -4,9 +4,33 @@
 -- ─────────────────────────────────────────────────────────
 
 local mwinit = require("modules.mwinit")
-local LOGIN_MWINIT_DELAY = 60
+local LOGIN_MWINIT_DELAY = 40
 
 local M = {}
+
+-- 所有事件都走这里
+-- call in console
+-- require("modules.unlock_watcher").handleEvent(hs.caffeinate.watcher.screensDidUnlock)
+function M.handleEvent(event)
+    -- 输出所有的MacOS events
+    -- event 默认是 ID, 获取name（调试用）
+    local eventName = "unknown"
+    for name, id in pairs(hs.caffeinate.watcher) do
+        if id == event then
+            eventName = name
+            break
+        end
+    end
+    print(string.format("[unlock_watcher] event: %s (%d)", eventName, event))
+
+    -- screensDidUnlock, 执行mwinit login
+    if event == hs.caffeinate.watcher.screensDidUnlock then
+        print(string.format("screen unlocked, will triger mwinit login in %s seconds", LOGIN_MWINIT_DELAY))
+        hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
+            mwinit.runOncePerDay()
+        end)
+    end
+end
 
 -- 保存 watcher 引用到 module 级变量
 -- 不这么做的话会被 GC，watcher 就失效了！
@@ -17,27 +41,7 @@ function M.start()
         print("[unlock_watcher] already running")
         return
     end
-
-    -- 输出所有的MacOS events
-    watcher = hs.caffeinate.watcher.new(function(event)
-        -- 事件 ID 转换成可读名字（调试用）
-        local eventName = "unknown"
-        for name, id in pairs(hs.caffeinate.watcher) do
-            if id == event then
-                eventName = name
-                break
-            end
-        end
-        print(string.format("[unlock_watcher] event: %s (%d)",
-            eventName, event))
-
-        if event == hs.caffeinate.watcher.screensDidUnlock then
-            hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
-                mwinit.runOncePerDay()
-            end)
-        end
-    end)
-
+    watcher = hs.caffeinate.watcher.new(M.handleEvent)
     watcher:start()
     print("[unlock_watcher] started")
 end
