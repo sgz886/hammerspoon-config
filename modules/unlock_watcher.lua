@@ -4,7 +4,7 @@
 -- ─────────────────────────────────────────────────────────
 
 local mwinit = require("modules.mwinit")
-local LOGIN_MWINIT_DELAY = 40
+local LOGIN_MWINIT_DELAY = 60
 
 local M = {}
 
@@ -44,6 +44,14 @@ function M.start()
     watcher = hs.caffeinate.watcher.new(M.handleEvent)
     watcher:start()
     print("[unlock_watcher] started")
+
+    -- 启动时也跑一次：处理开机后 Hammerspoon 才启动、错过 unlock 事件的情况
+    -- runOncePerDay 自带"今天已跑过就跳过"，所以重复触发是安全的
+    print("[unlock_watcher] starting unlock_watcher.lua, will run mwinit, in case of boot system in the morning.")
+    print(string.format("run mwinit proactively in %s seconds", LOGIN_MWINIT_DELAY))
+    hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
+        mwinit.runOncePerDay()
+    end)
 end
 
 function M.stop()
