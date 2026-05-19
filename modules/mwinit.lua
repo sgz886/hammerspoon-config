@@ -48,7 +48,10 @@ function M.mwinit()
         -- 冷启动：activate 会自动创建一个窗口，不需要再 create
         applescript = string.format([[
             tell application "iTerm"
-                delay 1
+                activate
+                repeat until (count of windows) > 0
+                    delay 0.1
+                end repeat
                 tell current session of current window
                     write text "exec %s"
                 end tell
