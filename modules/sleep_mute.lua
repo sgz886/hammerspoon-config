@@ -32,7 +32,7 @@ local function restoreVolume(attempt)
     local d2 = hs.audiodevice.defaultOutputDevice()
     local actual = d2 and d2:volume() or -1
     local muted = d2 and d2:muted() or "false"
-    print(string.format("[Restore #%d] 目标=%.0f, 实际=%.1f, muted=%s, device=%s",
+    print(string.format("[Restore #%d] 目标=%.0f, 结果=%.1f, muted=%s, device=%s",
       attempt, target, actual, tostring(muted), d2 and d2:name() or "nil"))
 
     if actual and actual >= target - 5 then
@@ -60,11 +60,12 @@ local function caffeinateCallback(eventType)
   local devName = dev and dev:name() or "nil"
   local vol = dev and dev:volume() or "nil"
   
-  print(string.format("[Caffeinate] event=%s | device=%s | vol=%s | volumeBeforeSleep=%s",
+  print(string.format("[sleep_mute hs.cafeinate] event=%s | device=%s | vol=%s | volumeBeforeSleep=%s",
     eventName, devName, tostring(vol), tostring(volumeBeforeSleep)))
 
   -- ========== 睡眠/锁屏时静音 ==========
-  if eventType == hs.caffeinate.watcher.systemWillSleep then
+  -- systemWillSleep->screensDidSleep,因为系统自动idle后永远不会进入systemWillSleep
+  if eventType == hs.caffeinate.watcher.screensDidSleep then
     local device = hs.audiodevice.defaultOutputDevice()
     -- 记录睡眠前的音量
     volumeBeforeSleep = device:volume()
