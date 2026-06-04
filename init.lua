@@ -7,6 +7,8 @@ require("modules.toggle_apps")
 require("modules.layouts")
 test = require("modules.test")
 require("modules.unlock_watcher").start()
+cursorSelect = require("utils.cursor_selection")
+cursorSelect.bindHotkey()
 
 -- ⭐ 暴露工作流为全局变量，方便 CLI 调用
 workflow = {
