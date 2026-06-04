@@ -2,6 +2,8 @@
 -- 1) 按住右 Command 超过 1 秒 → 模拟双击 Option（间隔 0.2 秒）
 -- 2) 在 (1) 触发之后，松开右 Command 1 秒后 → 再次模拟双击 Option（间隔 0.2 秒）
 
+local log = require("utils.mylog").new("doubao_speak", "info")
+
 local M = {}
 
 -- ======== 日志 ========
@@ -16,14 +18,12 @@ local M = {}
 --| `log.d(...)` | `log.df(fmt, ...)` | debug |
 --| `log.v(...)` | `log.vf(fmt, ...)` | verbose |
 
-local log = hs.logger.new("rightCmd", "info")
-
 -- ======== 配置参数 ========
-local FUNC_A_DELAY         = 0.2   -- 按下后多久执行函数 A
-local LONG_PRESS_THRESHOLD = 0.7   -- 按下后多久触发第一组 Option
-local RELEASE_OPTION_DELAY = 0.2   -- 松开后多久触发第二组 Option
-local FUNC_B_DELAY         = 1.0   -- 松开后多久执行函数 B
-local DOUBLE_TAP_INTERVAL  = 0.2   -- 两次 Option 之间的间隔
+local FUNC_A_DELAY         = 0.1   -- 按下后多久执行函数 A
+local FIRST_DOUBLE_TAP_OPTION_DELAY = 0.8   -- 按下后多久触发第一组 Option
+local SECOND_DOUBLE_TAP_OPTION_DELAY = 0.1   -- 松开后多久触发第二组 Option
+local FUNC_B_DELAY         = 1.5   -- 松开后多久执行函数 B
+local DOUBLE_TAP_INTERVAL  = 0.18   -- 两次 Option 之间的间隔
 
 -- ======== 状态 ========
 local rightCmdDown        = false
@@ -43,8 +43,13 @@ local funcBTimer          = nil    -- 松开后 1.5s 执行函数 B
 local RIGHT_CMD_KEYCODE = 54
 
 --输入法相关
-local TARGET_INPUT_SOURCE = "豆包输入法"    -- "com.bytedance.inputmethod.doubaoime"
-local previousInputSource = nil
+local TARGET_INPUT_METHOD = "豆包输入法"    -- "com.bytedance.inputmethod.doubaoime"
+local ENGLISH_INPUT = "U.S."
+local markedInputMethod = nil
+
+local watcher = hs.keycodes.inputSourceChanged(function()
+    log.df("current method: %s", hs.keycodes.currentMethod())
+end)
 
 -- ======== 工具函数 ========
 local function cancelTimer(t, name)
@@ -62,8 +67,9 @@ end
 -- 模拟一次 Option
 local function tapOption(tag)
     log.df("    [tap] 模拟按下 Option (%s)", tag or "")
-    hs.eventtap.event.newKeyEvent(hs.keycodes.map.alt, true):post()
-    hs.eventtap.event.newKeyEvent(hs.keycodes.map.alt, false):post()
+    hs.eventtap.event.newKeyEvent(hs.keycodes.map.rightalt, true):post()
+    hs.timer.usleep(30000)  -- 30ms
+    hs.eventtap.event.newKeyEvent(hs.keycodes.map.rightalt, false):post()
 end
 
 -- 触发一组"双击 Option"
@@ -96,24 +102,8 @@ end
 
 -- ======== 业务逻辑 ========
 -- 得到当前输入法
-local function nowSource()
-    local method = hs.keycodes.currentMethod()
-    if method ~= nil then
-        return {
-            kind = "method",
-            value = method
-        }
-    end
-
-    local layout = hs.keycodes.currentLayout()
-    if layout ~= nil then
-        return {
-            kind = "layout",
-            value = layout
-        }
-    end
-
-    return nil
+local function nowInputMethod()
+    return hs.keycodes.currentMethod()
 end
 
 
@@ -124,57 +114,42 @@ local function debugCurrentInputState(prefix)
 end
 
 local function switchToTargetIME()
-    local current = nowSource()
+    markedInputMethod = nowInputMethod()
 
-    if current ~= nil and current.kind == "method" and current.value == TARGET_INPUT_SOURCE then
-        log.df("当前已经是目标输入法，无需切换: %s", TARGET_INPUT_SOURCE)
+    if markedInputMethod == TARGET_INPUT_METHOD then
+        log.df("当前已经是目标输入法，无需切换: %s", TARGET_INPUT_METHOD)
         return
     end
-
-
-    previousInputSource = current
     debugCurrentInputState("before switch")
 
-    local result = hs.keycodes.setMethod(TARGET_INPUT_SOURCE)
-    log.df("切换到目标输入法: %s, 结果: %s", TARGET_INPUT_SOURCE, tostring(result))
+    local result = hs.keycodes.setMethod(TARGET_INPUT_METHOD)
+    --local result = hs.keycodes.currentSourceID("com.bytedance.inputmethod.doubaoime.pinyin")
+    log.df("切换到目标输入法: %s, 结果: %s", TARGET_INPUT_METHOD, tostring(result))
+    debugCurrentInputState("after switch")
 end
 
 local function restorePreviousIME()
-    if not previousInputSource then
-        log.df("没有记录到之前的输入来源，跳过恢复")
+    if markedInputMethod == TARGET_INPUT_METHOD then
+        log.df("当前已经是目标输入法，无需切换: %s", markedInputMethod)
         return
     end
 
-    local old = previousInputSource
+    log.df("准备恢复 U.S.")
 
-    log.df("准备恢复之前输入来源: kind=%s, value=%s", tostring(old.kind), tostring(old.value))
-
-    debugCurrentInputState("before restore")
-    local result = false
-
-    if old.kind == "method" then
-        result = hs.keycodes.setMethod(old.value)
-        log.df("恢复之前输入法 method: %s, 结果: %s", tostring(old.value), tostring(result))
-
-    elseif old.kind == "layout" then
-        result = hs.keycodes.setLayout(old.value)
-        log.df("恢复之前键盘布局 layout: %s, 结果: %s", tostring(old.value), tostring(result))
-    else
-        -- 被玩坏了才可能走到这里，让我看看是哪个小伙伴这么坏！！
-        log.df("未知的输入来源类型，无法恢复: %s", hs.inspect(old))
-    end
-
-    previousInputSource = nil
+    log.i("由于第二次开始切换后，语音功能不正常，临时取消恢复成英文输入法")
+    --debugCurrentInputState("before restore")
+    --local result = hs.keycodes.currentSourceID("com.apple.keylayout.US")
+    --local result = hs.keycodes.setLayout(ENGLISH_INPUT)
+    --log.df("恢复 %s , 结果: %s", ENGLISH_INPUT, tostring(result))
+    --debugCurrentInputState("after restore")
 end
 
 -- ======== 业务函数占位 ========
 local function functionA()
     log.f(">>> 执行 [函数 A]")
-    -- TODO: 在这里填写函数 A 的具体逻辑
 end
 local function functionB()
     log.f(">>> 执行 [函数 B]")
-    -- TODO: 在这里填写函数 B 的具体逻辑
 end
 
 -- ======== 事件监听 ========
@@ -195,7 +170,7 @@ local flagsWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, f
         log.i("=== 右 Cmd 按下 ===")
         cancelAllPending("新一轮按下，清理旧 timer")
 
-        -- 安排 0.5s 后执行函数 A
+        -- 安排 FUNC_A_DELAY 后执行函数 A
         log.df("安排 funcATimer：%.2f 秒后执行函数 A", FUNC_A_DELAY)
         funcATimer = hs.timer.doAfter(FUNC_A_DELAY, function()
             funcATimer = nil
@@ -209,9 +184,9 @@ local flagsWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, f
             end
         end)
 
-        -- 安排 1.0s 后触发第一组 Option
-        log.df("安排 longPressTimer：%.2f 秒后触发第一组", LONG_PRESS_THRESHOLD)
-        longPressTimer = hs.timer.doAfter(LONG_PRESS_THRESHOLD, function()
+        -- 安排 LONG_PRESS_THRESHOLD 后触发第一组 Option
+        log.df("安排 longPressTimer：%.2f 秒后触发第一组", FIRST_DOUBLE_TAP_OPTION_DELAY)
+        longPressTimer = hs.timer.doAfter(FIRST_DOUBLE_TAP_OPTION_DELAY, function()
             longPressTimer = nil
             log.df("longPressTimer 到期。rightCmdDown=%s", tostring(rightCmdDown))
             if rightCmdDown then
@@ -232,14 +207,14 @@ local flagsWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, f
             funcATimer = cancelTimer(funcATimer, "funcATimer(提前松开)")
         end
         if longPressTimer then
-            log.df("还没到 %.2f 秒就松开了，取消第一组", LONG_PRESS_THRESHOLD)
+            log.df("还没到 %.2f 秒就松开了，取消第一组", FIRST_DOUBLE_TAP_OPTION_DELAY)
             longPressTimer = cancelTimer(longPressTimer, "longPressTimer")
         end
 
         -- 安排第二组 Option：前提是第一组已经触发过
         if firstBurstFired then
-            log.df("第一组已触发过，安排 releaseOptionTimer：%.2f 秒后触发第二组", RELEASE_OPTION_DELAY)
-            releaseOptionTimer = hs.timer.doAfter(RELEASE_OPTION_DELAY, function()
+            log.df("第一组已触发过，安排 releaseOptionTimer：%.2f 秒后触发第二组", SECOND_DOUBLE_TAP_OPTION_DELAY)
+            releaseOptionTimer = hs.timer.doAfter(SECOND_DOUBLE_TAP_OPTION_DELAY, function()
                 releaseOptionTimer = nil
                 log.df("releaseOptionTimer 到期，开始触发第二组")
                 doubleTapOption("第二组", function(t) secondBurstTimer = t end)
@@ -266,17 +241,17 @@ end)
 -- ======== 生命周期 ========
 function M.start()
     flagsWatcher:start()
-    log.i("模块已启动")
+    log.i("doubao_speak 已启动")
 end
 
 function M.stop()
     flagsWatcher:stop()
     keyWatcher:stop()
-    cancelAllPending("模块停止")
-    log.i("模块已停止")
+    cancelAllPending("doubao_speak 停止")
+    log.i("doubao_speak 已停止")
 end
 
--- 方便运行时调整日志级别：hs.loadedFiles... 或在 console 里执行
+-- 方便运行时调整日志级别：在 console 里执行
 -- require("modules.right_cmd_long_press").setLogLevel("info")
 function M.setLogLevel(level)
     log.setLogLevel(level)
