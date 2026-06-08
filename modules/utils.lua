@@ -1,5 +1,7 @@
 -- 通用工具函数集合
 
+local focus_app_to_current_space = require("utils.move_app_across_spaces")
+
 local M = {}
 
 -- ============================================
@@ -15,8 +17,7 @@ function M.toggleApp(appName)
     frontApp:hide()
     print(string.format("%s hide",appName))
   else
-    hs.application.launchOrFocus(appName)
-    print(string.format("%s launchOrFocus",appName))
+    focus_app_to_current_space.focus_app_to_current_space(appName)
   end
 end
 
