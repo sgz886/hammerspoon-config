@@ -10,9 +10,11 @@ require("modules.assign_shortcut_to_function")
 cursorSelect = require("utils.get_cursor_selected_text")
 cursorSelect.bindHotkey()
 
--- ⭐ 暴露工作流为全局变量，方便 CLI 调用
+-- ⭐ 暴露工作流为全局变量，for wgesture call
 workflow = {
   sendToApp = function(appName) 
     require("modules.utils").sendSelectionToApp(appName) 
   end,
 }
+-- for wgesture call
+move_app = require("utils.move_app_across_spaces")

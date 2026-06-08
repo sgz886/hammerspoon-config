@@ -147,4 +147,139 @@ function M.focus_app_to_current_space(appName, opts)
     end)
 end
 
+-- ============================================================
+-- move_front_app_one_space(opts)
+-- 把「最前端 app」的主窗口移动 1 个 space：
+--   · 若它在所在屏幕的第 1 格 → 往右移 1 格
+--   · 否则 → 往左移 1 格
+-- 移动后用原生 Ctrl+方向键把屏幕切回原来的 space（无 Mission Control 动画）。
+--
+-- @param opts table?  可选配置：
+--     keyDelay     mouseDown 后等待按住状态建立的时间（默认 0.1）
+--     stepTimeout  单格移动超时（默认 1.5）
+--     backDelay    松手后到切回 space 之间的间隔（默认 0.2）
+-- ============================================================
+function M.move_front_app_one_space(opts)
+    opts = opts or {}
+    local KEY_DELAY    = opts.keyDelay    or 0.1
+    local STEP_TIMEOUT = opts.stepTimeout or 1.5
+    local BACK_DELAY   = opts.backDelay   or 0.2
+
+    local spaces = require "hs.spaces"
+    local hsee   = hs.eventtap.event
+    local log    = hs.logger.new("moveFrontApp", "info")  -- 调试改 "debug"
+
+    -- ---------- 内部工具 ----------
+    local function getUserSpaces(screen)
+        local list = (spaces.allSpaces() or {})[screen:getUUID()]
+        if not list then return nil end
+        local result = {}
+        for _, spc in ipairs(list) do
+            if spaces.spaceType(spc) == "user" then
+                table.insert(result, spc)
+            end
+        end
+        return result
+    end
+
+    local function indexOf(list, val)
+        for i, v in ipairs(list) do if v == val then return i end end
+        return nil
+    end
+
+    local function currentSpace(win)
+        local s = spaces.windowSpaces(win)
+        return (s and s[1]) or nil
+    end
+
+    -- ---------- 主流程 ----------
+    local app = hs.application.frontmostApplication()
+    if not app then log.e("找不到最前端 app"); return end
+
+    local win = app:mainWindow()
+    if not win then log.ef("'%s' 没有主窗口", app:name()); return end
+
+    local screen      = win:screen()
+    local originSpace = spaces.activeSpaceOnScreen(screen:id())
+
+    local userSpaces = getUserSpaces(screen)
+    if not userSpaces then log.e("取不到 user space 列表"); return end
+
+    local srcIdx = indexOf(userSpaces, currentSpace(win))
+    if not srcIdx then log.w("窗口当前 space 不在同屏列表中，终止"); return end
+
+    -- 第 1 格往右，其余往左
+    local dir = (srcIdx == 1) and "right" or "left"
+    log.df("最前端 app='%s' 在第 %d 格, 原 space=%s, 方向=%s",
+        app:name(), srcIdx, tostring(originSpace), dir)
+
+    -- 边界检查：确保目标方向有 space 可去
+    if dir == "right" and srcIdx >= #userSpaces then
+        log.w("已是最右一格，右边没有 space，终止"); return
+    end
+    if dir == "left" and srcIdx <= 1 then
+        log.w("已是最左一格，左边没有 space，终止"); return
+    end
+
+    local savedCursor = hs.mouse.getRelativePosition()
+    local zoomPoint   = hs.geometry(win:zoomButtonRect())
+    local safePoint   = zoomPoint:move({-1, -1}).topleft
+
+    -- 切回原 space（方案B：反方向原生 Ctrl+方向键，无 Mission Control 动画）+ 收尾
+    local function finish(ok, msg)
+        hsee.newMouseEvent(hsee.types.leftMouseUp, safePoint):post()
+        hs.mouse.setRelativePosition(savedCursor)
+
+        if ok then
+            hs.timer.doAfter(BACK_DELAY, function()
+                local backDir = (dir == "right") and "left" or "right"
+                hs.eventtap.keyStroke({"ctrl", "fn"}, backDir, 0)
+                log.df("✅ '%s' 已移动 1 格，并已切回原 space", app:name())
+            end)
+        else
+            log.wf("⚠️ %s", msg or "移动失败")
+        end
+    end
+
+    -- 移动鼠标到标题栏并确认到位，再按下（全程不松手）
+    hs.mouse.setRelativePosition(safePoint)
+    local moveStart = hs.timer.secondsSinceEpoch()
+    hs.timer.waitUntil(
+        function()
+            local p = hs.mouse.getRelativePosition()
+            return (math.abs(p.x - safePoint.x) < 3 and math.abs(p.y - safePoint.y) < 3)
+                or (hs.timer.secondsSinceEpoch() - moveStart) > 0.5
+        end,
+        function()
+            hsee.newMouseEvent(hsee.types.leftMouseDown, safePoint):post()
+
+            hs.timer.doAfter(KEY_DELAY, function()
+                local before = currentSpace(win)
+                hs.eventtap.keyStroke({"ctrl", "fn"}, dir, 0)  -- 拖窗口：带 fn
+
+                local t0 = hs.timer.secondsSinceEpoch()
+                hs.timer.waitUntil(
+                    function()
+                        local now = currentSpace(win)
+                        return ((now ~= nil) and (now ~= before))
+                            or (hs.timer.secondsSinceEpoch() - t0) > STEP_TIMEOUT
+                    end,
+                    function()
+                        local now = currentSpace(win)
+                        if now ~= nil and now ~= before then
+                            log.df("  ↳ 窗口已移动 (%s -> %s)", tostring(before), tostring(now))
+                            finish(true)
+                        else
+                            finish(false, string.format("移动超时，窗口 space=%s", tostring(now)))
+                        end
+                    end,
+                    0.03
+                )
+            end)
+        end,
+        0.02
+    )
+end
+
+
 return M
