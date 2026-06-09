@@ -121,16 +121,24 @@ function M.sequence(steps)
   runStep(1)
 end
 
+local session = {
+  text_polish = "1",
+  translator = "2",
+}
+
+
+
 -- ============================================
 -- sendSelectionToApp: 复制选中 → 切换应用 → 粘贴发送
 -- @param appName string  目标应用名
 -- ============================================
-function M.sendSelectionToApp(appName)
+function M.sendSelectionToChatBoxSession(sessionName)
+  appName = appName or "ChatBox"
   M.sequence({
     {0,   function() hs.eventtap.keyStroke({"cmd"}, "c") end},
-    {0.1, function() hs.application.launchOrFocus(appName) end},
-    {0.3, function() hs.eventtap.keyStroke({"cmd"}, "2") end},
-    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "I") end},
+    {0.1, function() hs.application.launchOrFocus("ChatBox") end},
+    {0.3, function() hs.eventtap.keyStroke({"cmd"}, session[sessionName]) end},
+    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "i") end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "return") end},
   })

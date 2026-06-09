@@ -5,13 +5,7 @@ local focus_app_to_current_space = require("utils.move_app_across_spaces")
 local function copyTextFromObsidianPasteToChatBox()
   local text = cursorSelection.getSelectedText()
   if text and text ~= "" then
-    hs.eventtap.keyStroke({"cmd"}, "c")
-    hs.timer.doAfter(1.2, function()
-      hs.eventtap.keyStroke({"cmd"}, "v")
-    end)
-    hs.timer.doAfter(1.4, function()
-      hs.eventtap.keyStroke({"cmd"}, "return")
-    end)
+    utils.sendSelectionToChatBoxSession("text_polish")
   end
 end
 
@@ -20,39 +14,26 @@ local function setAppLayoutAndFocus(appName, unitRect)
   utils.focusApp(appName)
 end
 
-local function layoutObsidianAndChatbox(name)
-  setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 })
-
-  if name == "Obsidian" then
-    copyTextFromObsidianPasteToChatBox()
-  end
-
-  hs.timer.doAfter(0.3, function()
-    setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 })
-  end)
-  hs.timer.doAfter(0.4, function()
-    hs.eventtap.keyStroke({ "cmd" }, "1")
-  end)
-  hs.timer.doAfter(0.6, function()
-    hs.eventtap.keyStroke({ "cmd" }, "i")
-  end)
-  hs.alert.show("📐 布局 Obsidian & Chatbox 已应用")
-end
-
 local M = {}
 function M.main()
   local app = hs.application.frontmostApplication()
   local name = app and app:name() or ""
-  if name == "Chatbox" or name == "Obsidian" then
-    layoutObsidianAndChatbox(name)
-  else
+
+  if name ~= "Chatbox" and name ~= "Obsidian" then
     focus_app_to_current_space.focus_app_to_current_space("Obsidian")
+  elseif name == "Chatbox" then
+    utils.sequence({
+      {0,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
+      {0.4, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end}
+    })
+  else
+    -- name == Obsidian
+    utils.sequence({
+      {0,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
+      {0.4, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end},
+      {0.2, function() copyTextFromObsidianPasteToChatBox() end}
+    })
   end
 end
-
-
-
-
-
 
 return M

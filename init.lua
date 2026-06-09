@@ -12,8 +12,8 @@ cursorSelect.bindHotkey()
 
 -- ⭐ 暴露工作流为全局变量，for wgesture call
 workflow = {
-  sendToApp = function(appName) 
-    require("modules.utils").sendSelectionToApp(appName) 
+  sendToApp = function(sessionName)
+    require("modules.utils").sendSelectionToChatBoxSession(sessionName)
   end,
 }
 -- for wgesture call
