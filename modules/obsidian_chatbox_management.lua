@@ -24,14 +24,16 @@ function M.main()
   elseif name == "Chatbox" then
     utils.sequence({
       {0,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
-      {0.4, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end}
+      {0.3,  function() focus_app_to_current_space.focus_app_to_current_space("Obsidian") end},
+      {0.5, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end}
     })
   else
     -- name == Obsidian
     utils.sequence({
-      {0,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
+      {0,  function() focus_app_to_current_space.focus_app_to_current_space("Chatbox") end},
+      {0.4,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
       {0.4, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end},
-      {0.2, function() copyTextFromObsidianPasteToChatBox() end}
+      {0.3, function() copyTextFromObsidianPasteToChatBox() end}
     })
   end
 end

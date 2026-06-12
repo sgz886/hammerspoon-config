@@ -136,7 +136,7 @@ function M.sendSelectionToChatBoxSession(sessionName)
   appName = appName or "ChatBox"
   M.sequence({
     {0,   function() hs.eventtap.keyStroke({"cmd"}, "c") end},
-    {0.1, function() hs.application.launchOrFocus("ChatBox") end},
+    {0.1, function() focus_app_to_current_space.focus_app_to_current_space("ChatBox") end},
     {0.3, function() hs.eventtap.keyStroke({"cmd"}, session[sessionName]) end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "i") end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
