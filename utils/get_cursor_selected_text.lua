@@ -68,11 +68,11 @@ function M.test()
 end
 
 --- Bind a hotkey to run the test. Default: Cmd+Alt+T
-function M.bindHotkey(mods, key)
-    mods = mods or {"cmd", "alt"}
-    key  = key  or "t"
-    hs.hotkey.bind(mods, key, function() M.test() end)
-    print(string.format("[test_copy] Hotkey bound: %s+%s", table.concat(mods, "+"), key))
-end
+--function M.bindHotkey(mods, key)
+--    mods = mods or {"cmd", "alt"}
+--    key  = key  or "t"
+--    hs.hotkey.bind(mods, key, function() M.test() end)
+--    print(string.format("[test_copy] Hotkey bound: %s+%s", table.concat(mods, "+"), key))
+--end
 
 return M

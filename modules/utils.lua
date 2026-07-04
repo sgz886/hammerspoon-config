@@ -130,7 +130,7 @@ local session = {
 
 -- ============================================
 -- sendSelectionToApp: 复制选中 → 切换应用 → 粘贴发送
--- @param appName string  目标应用名
+-- @param sessionName string  text_polish , translator
 -- ============================================
 function M.sendSelectionToChatBoxSession(sessionName)
   appName = appName or "ChatBox"

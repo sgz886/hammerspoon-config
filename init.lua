@@ -8,7 +8,6 @@ require("modules.unlock_watcher").start()
 require("modules.assign_shortcut_to_function")
 
 cursorSelect = require("utils.get_cursor_selected_text")
-cursorSelect.bindHotkey()
 
 -- ⭐ 暴露工作流为全局变量，for wgesture call
 workflow = {
