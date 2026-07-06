@@ -7,6 +7,7 @@ local mwinit = require("modules.mwinit")
 local LOGIN_MWINIT_DELAY = 60
 
 local M = {}
+local unlockTimer = nil
 
 -- 所有事件都走这里
 -- call in console
@@ -26,7 +27,7 @@ function M.handleEvent(event)
     -- screensDidUnlock, 执行mwinit login
     if event == hs.caffeinate.watcher.screensDidUnlock then
         print(string.format("screen unlocked, will triger mwinit login in %s seconds", LOGIN_MWINIT_DELAY))
-        hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
+        unlockTimer = hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
             mwinit.runOncePerDay()
         end)
     end
@@ -35,6 +36,8 @@ end
 -- 保存 watcher 引用到 module 级变量
 -- 不这么做的话会被 GC，watcher 就失效了！
 local watcher = nil
+-- 新增：保存 timer 引用，防止被 GC
+local startupTimer = nil
 
 function M.start()
     if watcher then
@@ -49,7 +52,9 @@ function M.start()
     -- runOncePerDay 自带"今天已跑过就跳过"，所以重复触发是安全的
     print("[unlock_watcher] starting unlock_watcher.lua, will run mwinit, in case of boot system in the morning.")
     print(string.format("run mwinit proactively in %s seconds", LOGIN_MWINIT_DELAY))
-    hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
+
+    -- ✅ 把返回值保存下来，防止 timer 在触发前被 GC
+    startupTimer = hs.timer.doAfter(LOGIN_MWINIT_DELAY, function()
         mwinit.runOncePerDay()
     end)
 end
