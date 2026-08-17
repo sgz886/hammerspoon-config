@@ -8,10 +8,18 @@ local M = {}
 -- 脚本路径（展开 ~ 到真实 home 目录）
 local SCRIPT_PATH = os.getenv("HOME") .. "/.hammerspoon/modules/mwinit-auto.sh"
 
--- hs.settings 里存储"上次自动触发日期"的 key
+-- hs.settings 里存储"上次成功登录日期"的 key
+-- ⭐ 只有 mwinit-auto.sh 走完 interact 且 mwinit 成功退出后，
+--    脚本才会用 `hs -c` 回调 M.markSuccess() 写这个 key
 local SETTINGS_KEY = "mwinit.lastAutoRunDate"
 
---- 核心：在 iTerm 里跑 mwinit-auto.sh
+-- 上一次启动脚本的时间戳（module 级变量，防 GC / reload 即清零）
+-- 用来避免 60s 窗口内重复解锁、或开机补偿 timer 叠加时开出多个 iTerm 窗口
+-- （两个 expect 抢同一个 tty 会互相打断）
+local pendingSince = nil
+local PENDING_TIMEOUT = 300  -- 秒；超过就认为上一次已经死了，可以再开
+
+--- 核心：在 iTerm 里跑
 function M.mwinit()
     -- 1. 先检查脚本是否存在
     local f = io.open(SCRIPT_PATH, "r")
@@ -72,7 +80,19 @@ function M.mwinit()
     }, 5)  -- 显示 5 秒
 end
 
---- 每日首次调用：如果今天还没跑过，就跑；否则跳过
+--- 由 mwinit-auto.sh 在成功后通过 `hs -c` 回调：
+---   hs -c 'require("modules.mwinit").markSuccess()'
+--- 这是唯一写入"今天已完成"标记的地方
+function M.markSuccess()
+    local today = os.date("%Y-%m-%d")
+    hs.settings.set(SETTINGS_KEY, today)
+    pendingSince = nil
+    print(string.format("[mwinit] ✅ 登录成功，已标记 %s", today))
+    hs.alert.show("✅ mwinit 登录成功")
+end
+
+--- 每日调用：今天还没成功登录过就跑；已成功或正在进行中则跳过
+--- 注意：失败/取消不会写标记，所以今天下次解锁还会再试
 --- @return boolean 是否真的执行了
 function M.runOncePerDay()
     local today = os.date("%Y-%m-%d")
@@ -80,21 +100,37 @@ function M.runOncePerDay()
     print(string.format("[mwinit] runOncePerDay: today=%s lastRun=%s",
         today, tostring(lastRun)))
     if lastRun == today then
-        print("[mwinit] 今天已经自动运行过了，跳过")
+        print("[mwinit] 今天已经成功登录过了，跳过")
         return false
     end
-    -- 先记录日期再执行 —— 即使执行失败，今天也不再重试
-    -- （避免失败时反复弹窗打扰用户；想要重试就手动调用 M.run()）
-    hs.settings.set(SETTINGS_KEY, today)
-    print("[mwinit] 今日首次解锁，触发 mwinit")
+
+    -- 上一次还在进行中（用户可能正盯着 iTerm 等着摸 key）→ 不要再开一个窗口
+    if pendingSince and (os.time() - pendingSince) < PENDING_TIMEOUT then
+        print(string.format("[mwinit] 上一次 mwinit 还在进行中（%d 秒前启动），跳过",
+            os.time() - pendingSince))
+        return false
+    end
+
+    -- ⭐ 这里不写日期标记！只有脚本成功后回调 M.markSuccess() 才写
+    pendingSince = os.time()
+    print("[mwinit] 今天还没成功登录，触发 mwinit")
     M.mwinit()
     return true
 end
 
---- 调试用：清除"今日已运行"标记，让下次解锁重新触发
+--- 调试用：清除"今日已完成"标记，让下次解锁重新触发
 function M.resetDailyFlag()
     hs.settings.clear(SETTINGS_KEY)
+    pendingSince = nil
     print("[mwinit] 已清除每日标记")
+end
+
+--- 调试用：打印当前状态
+function M.status()
+    print(string.format("[mwinit] today=%s lastRun=%s pendingSince=%s",
+        os.date("%Y-%m-%d"),
+        tostring(hs.settings.get(SETTINGS_KEY)),
+        pendingSince and string.format("%d 秒前", os.time() - pendingSince) or "nil"))
 end
 
 
