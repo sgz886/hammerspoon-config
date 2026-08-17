@@ -1,7 +1,7 @@
 -- 加载各个模块
 require("hs.ipc")    -- 防止 error: can't access Hammerspoon message port Hammerspoon
 
-require("modules.doubao_speak")
+-- require("modules.doubao_speak")
 require("modules.sleep_mute")
 test = require("modules.test")
 require("modules.unlock_watcher").start()
