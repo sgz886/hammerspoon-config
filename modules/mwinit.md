@@ -16,12 +16,13 @@ mw.markSuccess()      -- 手动标记今天已完成（脚本正常会自己调�
 mw.resetDailyFlag()   -- 清标记，让下次解锁重新触发
 ```
 
-### 脚本回调用的命令（脚本内部执行的就是这一句）
+### in terminal
+
+#### 脚本回调用的命令（脚本内部执行的就是这一句）
 ```bash
 hs -c 'require("modules.mwinit").markSuccess()'
 ```
-
-### in terminal
+#### 其他
 ```bash
 osascript <<'EOF'
 tell application "iTerm"

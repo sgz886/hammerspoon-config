@@ -92,6 +92,14 @@ test.help()                                                                     
 
 **持久状态**：全仓库只有一个 `hs.settings` key —— `mwinit.lastAutoRunDate`（`modules/mwinit.lua`），落盘在 `~/Library/Preferences/org.hammerspoon.Hammerspoon.plist`。其他模块的状态都是 module 级变量，reload 即清零（例如 `sleep_mute.lua:6` 的 `volumeBeforeSleep`）。
 
+### 调试命令
+
+**in terminal**
+
+```bash
+hs -c 'require("modules.utils").focusApp("Chatbox")'
+```
+
 ## mwinit 每日自动登录
 
 调用链：
@@ -115,8 +123,6 @@ init.lua → unlock_watcher.start()
 外部依赖：Keychain 条目（`security find-generic-password -a $USER -s mwinit -w`）、`/usr/local/bin/mwinit`、`/usr/bin/expect`、iTerm2、`hs` CLI。调试命令见 `modules/mwinit.md`。
 
 ## 别动这些（都是踩过坑的）
-
-- **`move_app_across_spaces` 里 mouseDown 之后的那 0.1s 延时不能省**，否则 macOS 只会纯切 Space 而不把窗口带过去。见根目录 `test.lua:24-26` 的原始注释，在模块里表现为 `downDelay` / `keyDelay`（默认 0.1）。
 - **`sleep_mute` 必须监听 `screensDidSleep` 而不是 `systemWillSleep`**：系统 idle 之后永远不会进 system sleep。见 `sleep_mute.lua:67` 和 commit `7fef8f2`。
 - 定时器/watcher 的引用要存起来，同上面的 GC 陷阱。
 

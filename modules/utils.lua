@@ -9,7 +9,7 @@ local M = {}
 -- 如果目标应用已在最前 → 隐藏
 -- 否则 → 启动/切换到它
 -- 
--- @param appName string  应用名（如 "Chatbox"）
+-- @param appName string  应用名（如 "Chatbox", "Obsidian"）
 -- ============================================
 function M.toggleApp(appName)
   local frontApp = hs.application.frontmostApplication()
@@ -25,6 +25,7 @@ end
 -- focusApp: 聚焦应用（不切换隐藏）
 -- 如果已在最前 → 什么都不做
 -- 否则 → 启动/切换到它
+-- @param appName string  应用名（如 "Chatbox", "Obsidian"）
 -- ============================================
 function M.focusApp(appName)
   local frontApp = hs.application.frontmostApplication()
