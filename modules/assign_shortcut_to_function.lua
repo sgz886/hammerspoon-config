@@ -22,7 +22,7 @@ for _, b in ipairs(toggleAppBindings) do
 end
 
 -- individual bindings
-hs.hotkey.bind({"ctrl", "shift", "cmd"}, "z", obsidian_chatbox_management.main)
+hs.hotkey.bind({"ctrl", "cmd"}, "z", obsidian_chatbox_management.main)
 
 hs.hotkey.bind({"cmd", "alt"}, "t", kirocli_copy_and_send_to_chatbox_translate.main)
 

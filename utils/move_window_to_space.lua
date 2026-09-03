@@ -9,7 +9,7 @@
 --   ⭐ 移动交给 yabai，不模拟鼠标 / 键盘，所以快，也不会被 Mission Control 动画卡住
 --      （yabai v7 起不需要 scripting addition，SIP 开着也能用）
 --   ⚠️ 窗口永远不跨显示器 —— 只在它自己所在那块屏幕的 space 里挪
---   · 全程同步，没有 timer，也就没有 GC 陷阱
+--   · 移动本身全同步；只有 focus_app 的 onReady 回调会起一个轮询 timer
 --
 -- 测试:
 --   hs -c 'require("utils.move_window_to_space").focus_app("Obsidian")'
@@ -23,13 +23,13 @@ local M = {}
 -- 方向 → 在 space 列表里前进的步长
 local DIRECTIONS = { left = -1, right = 1 }
 
--- 启动 App 后的冷却时间（秒）。冷启动要好几秒，用户看不到窗口很容易连按快捷键，
--- 这段时间内的重复调用直接忽略，免得连发好几次 launchOrFocus。
-local LAUNCH_COOLDOWN = 3
-
 -- 内置屏幕的 hs.screen:name() 特征。Hammerspoon 没有「是不是内置屏」的标志位
 -- （hs.screen:getInfo() 返回 nil），只能认名字；系统语言不同名字也不同，中英文都收着。
 local BUILTIN_SCREEN_PATTERNS = { "Built%-in", "内置" }
+
+-- 等 App 到前台的上限（秒）和轮询间隔。冷启动 Electron 应用可能要好几秒
+local READY_TIMEOUT = 5
+local READY_POLL    = 0.05
 
 -- ──────────── 通用内部工具 ────────────
 
@@ -230,13 +230,10 @@ local function pullWindowIntoView(win, appName)
     return true
 end
 
--- 各 App 最近一次成功触发 launchOrFocus 的时间戳，用来做启动冷却
-local lastLaunchAt = {}
-
 --- 把指定 App 的窗口拉到「它所在屏幕正在显示的 space」并聚焦
 -- App 被隐藏了也能唤出来。没运行、或者窗口被 ⌘W 关掉时，交给 launchOrFocus 就行 ——
 -- ⭐ 新窗口一定会落在某块屏幕当前显示的 space 上，本来就不需要我们再挪一次。
--- 启动后 LAUNCH_COOLDOWN 秒内的重复调用会被忽略（用户没看到窗口时的连按）。
+-- ⚠️ 这里【不做】连按保护。防连按在 focus_app 里，直接调这个函数就没人拦。
 -- @param appName string  应用名，如 "Obsidian"
 -- @return boolean  是否成功
 -- @return string?  失败原因
@@ -249,53 +246,105 @@ function M.focus_app_to_current_space(appName)
     local win = app and app:mainWindow()
     if win then return pullWindowIntoView(win, appName) end
 
-    -- 还没窗口。冷启动期间用户很可能连按快捷键，冷却掉多余的那几发
-    local now     = hs.timer.secondsSinceEpoch()
-    local elapsed = now - (lastLaunchAt[appName] or 0)
-    if elapsed < LAUNCH_COOLDOWN then
-        print(string.format("[move_window_to_space] '%s' 启动中（%.1fs 前刚触发），忽略这次调用",
-            appName, elapsed))
-        return true
-    end
-
     print(string.format("[move_window_to_space] '%s' 没有窗口，交给 launchOrFocus", appName))
     if not hs.application.launchOrFocus(appName) then
-        -- 启动失败（一般是 App 名写错）不记冷却，好让下一次调用能立刻重试
         return fail(string.format("启动不了 '%s'（App 名字对吗？）", appName))
     end
 
-    lastLaunchAt[appName] = now
     hs.alert.show(string.format("⏳ 正在启动 %s…", appName))
     return true
+end
+
+-- ============================================================
+-- 首选入口 focus_app + 「等 App 真的到前台」
+-- ============================================================
+
+-- 各 App 正在跑的就绪等待 timer
+-- ⚠️ 必须存成 module 级变量，不然会被 GC，等待静默失效（见 unlock_watcher.lua 的同类注释）
+local readyWaits = {}
+
+--- App 是不是已经就绪：在前台 + 有窗口
+-- ⭐ 「在前台」才是关键 —— hs.eventtap.keyStroke 是发给前台 App 的，
+--    只判断「窗口出现了」的话，键盘事件可能还打在旧的前台 App 身上。
+-- @param appName string
+-- @return boolean
+function M.app_is_ready(appName)
+    if invalidAppName(appName) then return false end
+    local front = hs.application.frontmostApplication()
+    if not front then return false end
+    local name = front:name()
+    if not name or name ~= appName then return false end
+    return front:mainWindow() ~= nil
+end
+
+-- 等 App 就绪，就绪后执行 onReady（onReady 可以是 nil —— 那这就只是一次「等它起来」的守卫）
+-- readyWaits[appName] 有值 = 这个 App 正在等就绪，focus_app 靠它拦掉连按
+-- ⚠️ 超时【不会】回调 —— 不然后续 keystroke 会打到别的 App 身上，那比什么都不做更糟
+local function whenAppReady(appName, onReady, timeout)
+    timeout = timeout or READY_TIMEOUT
+    local deadline = hs.timer.secondsSinceEpoch() + timeout
+
+    readyWaits[appName] = hs.timer.waitUntil(
+        function()
+            return M.app_is_ready(appName) or hs.timer.secondsSinceEpoch() > deadline
+        end,
+        function()
+            readyWaits[appName] = nil
+            if not M.app_is_ready(appName) then
+                fail(string.format("等了 %.0f 秒 '%s' 还是没到前台%s",
+                    timeout, appName, onReady and "，后续动作已取消" or ""))
+                return
+            end
+            print(string.format("[move_window_to_space] ✅ '%s' 已就绪", appName))
+            if onReady then onReady() end
+        end,
+        READY_POLL)
 end
 
 --- 聚焦指定 App —— 对外首选入口
 --   · App 有窗口且窗口在【内置屏】上 → 直接 launchOrFocus，让 macOS 自己切过去，窗口不动
 --   · 其余情况（窗口在外接屏 / App 没运行 / 窗口被关了）→ 走 focus_app_to_current_space
--- @param appName string  应用名，如 "Obsidian"
--- @return boolean  是否成功
+-- 每次调用都会盯着这个 App 直到它真的在前台且有窗口（最多等 timeout 秒），期间：
+--   · ⭐ 同一个 App 的重复调用一律忽略 —— 冷启动要好几秒，用户看不到窗口就会连按快捷键
+--   · 传了 onReady 的话，就绪后才执行它；冷启动时后续的 keyStroke 得挂在这里，别用固定延时去赌
+-- @param appName string    应用名，如 "Obsidian"
+-- @param onReady function? App 就绪后执行；超时则不执行，只报错
+-- @param timeout number?   等待上限，默认 READY_TIMEOUT 秒
+-- @return boolean  聚焦动作本身是否成功（不代表 App 已经就绪）
 -- @return string?  失败原因
-function M.focus_app(appName)
+function M.focus_app(appName, onReady, timeout)
     if invalidAppName(appName) then
         return fail(string.format("appName 必须是非空字符串，收到 '%s'", tostring(appName)))
     end
 
-    local app = getRunningApp(appName)
-    local win = app and app:mainWindow()
-    if win and win:id() then
-        local info = getWindowInfo(win:id())
-        -- 判断不了内置屏的时候不报错，直接落到下面那条通用路径
-        if info and isBuiltinDisplay(info.display) then
-            print(string.format("[move_window_to_space] '%s' 在内置屏（space %s），直接 launchOrFocus",
-                appName, tostring(info.space)))
-            if not hs.application.launchOrFocus(appName) then
-                return fail(string.format("聚焦不了 '%s'", appName))
-            end
-            return true
-        end
+    -- 上一次调用还在等这个 App 就绪 → 这次是连按，直接丢掉
+    if readyWaits[appName] then
+        print(string.format("[move_window_to_space] 还在等 '%s' 就绪，忽略这次调用", appName))
+        hs.alert.show("还在等" .. appName.. "就绪，忽略这次调用")
+        return true
     end
 
-    return M.focus_app_to_current_space(appName)
+    local ok, err
+    local app = getRunningApp(appName)
+    local win = app and app:mainWindow()
+    local info = win and win:id() and getWindowInfo(win:id())
+
+    -- 判断不了内置屏的时候不报错，直接落到通用路径
+    if info and isBuiltinDisplay(info.display) then
+        print(string.format("[move_window_to_space] '%s' 在内置屏（space %s），直接 launchOrFocus",
+            appName, tostring(info.space)))
+        if hs.application.launchOrFocus(appName) then
+            ok = true
+        else
+            ok, err = fail(string.format("聚焦不了 '%s'", appName))
+        end
+    else
+        ok, err = M.focus_app_to_current_space(appName)
+    end
+
+    -- 聚焦成功就盯着它到就绪：既是 onReady 的触发条件，也是下一次连按的拦截依据
+    if ok then whenAppReady(appName, onReady, timeout) end
+    return ok, err
 end
 
 return M

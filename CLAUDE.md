@@ -19,9 +19,9 @@ test-step2.lua  ⚠️ 同上
 | 文件 | 作用 |
 |---|---|
 | `assign_shortcut_to_function.lua` | **唯一的快捷键注册处**。文件作用域直接 `hs.hotkey.bind` |
-| `utils.lua` | 共享工具中枢：切换/聚焦 App、窗口布局、`sequence`、发送到 ChatBox |
+| `utils.lua` | 共享工具中枢：切换/聚焦 App、窗口布局、`sequence`、发送到 Chatbox |
 | `obsidian_chatbox_management.lua` | `⌃⇧⌘Z`：按当前前台 App 三态切换，把 Obsidian + Chatbox 平铺到当前 Space |
-| `kiro-cli_copy_and_send_to_chatbox_translate.lua` | `⌘⌥T`：在 Kiro CLI 里 copy，再丢给 ChatBox 的 translator |
+| `kiro-cli_copy_and_send_to_chatbox_translate.lua` | `⌘⌥T`：在 Kiro CLI 里 copy，再丢给 Chatbox 的 translator |
 | `mwinit.lua` + `mwinit-auto.sh` + `mwinit.md` | 每天自动跑一次 Amazon SSO 登录（见下文） |
 | `unlock_watcher.lua` | `hs.caffeinate.watcher` 事件分发；mwinit 的唯一调用方 |
 | `sleep_mute.lua` | 息屏静音、解锁 3 秒后恢复原音量（带 5 次读回重试） |
@@ -56,7 +56,7 @@ test-step2.lua  ⚠️ 同上
 ```lua
 utils.sequence({
   {0,   function() hs.eventtap.keyStroke({"cmd"}, "c") end},
-  {0.1, function() focus_app_to_current_space.focus_app_to_current_space("ChatBox") end},
+  {0.1, function() focus_app_to_current_space.focus_app_to_current_space("Chatbox") end},
   {0.3, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
 })
 ```

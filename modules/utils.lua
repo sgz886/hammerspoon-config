@@ -131,21 +131,41 @@ local session = {
 
 -- ============================================
 -- sendSelectionToApp: 复制选中 → 切换应用 → 粘贴发送
+-- ⭐ 后面那串 keyStroke 挂在 focus_app 的就绪回调里，不用固定延时去赌 Chatbox
+--    什么时候起来 —— App 被整个关掉过的话，冷启动要好几秒。
+--    Chatbox 没能在 10 秒内到前台，回调就不会执行（keyStroke 打到别的 App 上更糟）。
 -- @param sessionName string  text_polish , translator
 -- ============================================
-function M.sendSelectionToChatBoxSession(sessionName)
-  appName = appName or "ChatBox"
+function M.sendSelectionToChatboxSession(sessionName)
   M.sequence({
     {0,   function() hs.eventtap.keyStroke({"cmd"}, "c") end},
-    {0.1, function() move_window.focus_app("ChatBox") end},
-    {0.3, function() hs.eventtap.keyStroke({"cmd"}, session[sessionName]) end},
-    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "i") end},
-    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
-    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "return") end},
+    {0.1, function()
+      move_window.focus_app("Chatbox", function()
+        M.sequence({
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, session[sessionName]) end},
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, "i") end},
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, "return") end},
+        })
+      end)
+    end},
   })
 end
 
-
+function M.sendSelectionToChatboxSession1(sessionName)
+  M.sequence({
+    {0, function()
+      move_window.focus_app("Chatbox", function()
+        M.sequence({
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, session[sessionName]) end},
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, "i") end},
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
+          {0.2, function() hs.eventtap.keyStroke({"cmd"}, "return") end},
+        })
+      end)
+    end},
+  })
+end
 
 
 

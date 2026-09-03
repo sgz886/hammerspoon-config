@@ -12,7 +12,7 @@ cursorSelect = require("utils.get_cursor_selected_text")
 -- ⭐ 暴露工作流为全局变量，for wgesture call
 workflow = {
   sendToApp = function(sessionName)
-    require("modules.utils").sendSelectionToChatBoxSession(sessionName)
+    require("modules.utils").sendSelectionToChatboxSession(sessionName)
   end,
 }
 -- for wgesture call
