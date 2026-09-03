@@ -1,6 +1,6 @@
 local utils = require("modules.utils")
 local cursorSelection = require("utils.get_cursor_selected_text")
-local focus_app_to_current_space = require("utils.move_app_across_spaces")
+local move_window = require("utils.move_window_to_space")
 
 local function copyTextFromObsidianPasteToChatBox()
   local text = cursorSelection.getSelectedText()
@@ -20,18 +20,18 @@ function M.main()
   local name = app and app:name() or ""
 
   if name ~= "Chatbox" and name ~= "Obsidian" then
-    focus_app_to_current_space.focus_app_to_current_space("Obsidian")
+    move_window.focus_app("Obsidian")
   elseif name == "Chatbox" then
     utils.sequence({
       {0,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
-      {0.1,  function() focus_app_to_current_space.focus_app_to_current_space("Obsidian") end},
+      {0.1,  function() move_window.focus_app("Obsidian") end},
       {0.4, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end}
     })
   else
-    -- name == Obsidian
+    -- name == Obsidian 的情况
     utils.sequence({
       {0, function() setAppLayoutAndFocus("Obsidian", { 1 / 3, 1 / 2, 1 / 3, 1 / 2 }) end},
-      {0.1,  function() focus_app_to_current_space.focus_app_to_current_space("Chatbox") end},
+      {0.1,  function() move_window.focus_app("Chatbox") end},
       {0.5,  function() setAppLayoutAndFocus("Chatbox", { 0, 0, 1 / 3, 1 }) end},
       {0.5, function() utils.focusApp("Obsidian") end},
       --{0.5, function() hs.alert.show("front most is " .. hs.application.frontmostApplication():name()) end}

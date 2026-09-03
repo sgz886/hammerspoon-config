@@ -16,4 +16,4 @@ workflow = {
   end,
 }
 -- for wgesture call
-move_app = require("utils.move_app_across_spaces")
+move_app = require("utils.move_window_to_space")
