@@ -8,12 +8,19 @@ local CHATBOX_RECT  = { 0, 0, 1 / 3, 1 }
 
 local CHATBOX_SESSION = "text_polish"
 
-local function setAppLayoutAndFocus(appName, unitRect)
-  utils.moveAppWindowEnsureRunning(appName, unitRect)
-  utils.focusApp(appName)
-end
 local function setAppLayout(appName, unitRect)
   utils.moveAppWindowEnsureRunning(appName, unitRect)
+end
+
+-- Chatbox 就绪后的两种收尾动作。签名都对齐 focusChatboxThenExecute 的 execute(sessionName)，
+-- 所以能直接按引用传过去，不用包闭包。（layoutChatbox 用不到 sessionName，Lua 会忽略多余实参）
+local function layoutChatbox()
+  setAppLayout("Chatbox", CHATBOX_RECT)
+end
+
+local function layoutChatboxAndSend(sessionName)
+  layoutChatbox()
+  utils.pasteClipboardToChatbox(sessionName)
 end
 
 local M = {}
@@ -41,14 +48,9 @@ function M.main()
   -- 2) Obsidian 就位
   setAppLayout("Obsidian", OBSIDIAN_RECT)
 
-  -- 3) 切到 Chatbox。布局和发送都挂在就绪回调里 —— Chatbox 被整个关掉过的话
-  --    冷启动要好几秒，用固定延时赌不住。
-  move_window.focus_app("Chatbox", function()
-    setAppLayout("Chatbox", CHATBOX_RECT)
-    if needSendTextToChatbox then
-      utils.pasteClipboardToChatbox(CHATBOX_SESSION)
-    end
-  end)
+  -- 3) 切到 Chatbox。布局总要做，发送只在真有选中时才做，都挂在就绪回调里
+  local onChatboxReady = needSendTextToChatbox and layoutChatboxAndSend or layoutChatbox
+  utils.focusChatboxThenExecute(CHATBOX_SESSION, onChatboxReady)
 end
 
 return M

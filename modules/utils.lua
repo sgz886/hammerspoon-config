@@ -122,6 +122,8 @@ function M.sequence(steps)
   runStep(1)
 end
 
+local CHATBOX_APP = "Chatbox"
+
 local session = {
   text_polish = "1",
   translator = "2",
@@ -143,20 +145,27 @@ function M.pasteClipboardToChatbox(sessionName)
 end
 
 -- ============================================
--- focusChatboxAndExecute: 复制选中 → 切换应用 → 粘贴发送
--- ⭐ 后面那串 keyStroke 挂在 focus_app 的就绪回调里，不用固定延时去赌 Chatbox
---    什么时候起来 —— App 被整个关掉过的话，冷启动要好几秒。
---    Chatbox 没能在超时时间内到前台，回调就不会执行（keyStroke 打到别的 App 上更糟）。
+-- focusChatboxThenExecute: 聚焦 Chatbox，等它真正就绪后执行 execute(sessionName)
+-- ⭐ execute 挂在 focus_app 的就绪回调里，不用固定延时去赌 Chatbox 什么时候起来 ——
+--    App 被整个关掉过的话冷启动要好几秒。没能在超时时间内到前台，execute 就不会执行
+--    （keyStroke 打到别的 App 上比什么都不做更糟，这条由 focus_app 保证）。
+-- @param sessionName string   转发给 execute，见 session 表
+-- @param execute function?    Chatbox 就绪后执行，签名 execute(sessionName)；不传就只聚焦
+-- ============================================
+function M.focusChatboxThenExecute(sessionName, execute)
+  move_window.focus_app(CHATBOX_APP, function()
+    if execute then execute(sessionName) end
+  end)
+end
+
+-- ============================================
+-- copyToChatbox: 复制选中 → 切到 Chatbox → 粘贴发送
 -- @param sessionName string  text_polish , translator
 -- ============================================
-function M.focusChatboxAndExecute(sessionName)
+function M.copyToChatbox(sessionName)
   M.sequence({
     {0,   function() hs.eventtap.keyStroke({"cmd"}, "c") end},
-    {0.1, function()
-      move_window.focus_app("Chatbox", function()
-        M.pasteClipboardToChatbox(sessionName)
-      end)
-    end},
+    {0.1, function() M.focusChatboxThenExecute(sessionName, M.pasteClipboardToChatbox) end},
   })
 end
 

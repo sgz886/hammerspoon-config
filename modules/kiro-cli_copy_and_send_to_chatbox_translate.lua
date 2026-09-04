@@ -5,7 +5,7 @@ function M.main()
     utils.sequence({
       {0,  function() hs.eventtap.keyStrokes('/copy') end},
       {0.1,  function() hs.eventtap.keyStroke({}, 'return') end},
-      {0,  function() utils.focusChatboxAndExecute("translator") end},
+      {0.1,  function() utils.focusChatboxThenExecute("translator",utils.pasteClipboardToChatbox) end},
     })
 end
 

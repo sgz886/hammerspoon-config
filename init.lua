@@ -15,6 +15,6 @@ wgestures = {
     require("utils.move_window_to_space").move_focused_window(direction)
   end,
   sendToChatbox = function(sessionName)
-    require("modules.utils").focusChatboxAndExecute(sessionName)
+    require("modules.utils").copyToChatbox(sessionName)
   end
 }
