@@ -200,18 +200,12 @@ end
 -- 指定 App → 它所在屏幕正在显示的 space
 -- ============================================================
 
--- 按 App 名找运行中的应用（忽略大小写的精确匹配）
--- ⚠️ 别用 hs.application.get()：App 名匹配不上时它会退回按「窗口标题」找，
---    而且 application.lua:169-172 把 app 追加进了还装着 window 的同一个表里，
---    于是第 1 个返回值是 hs.window 而不是 hs.application，调 :mainWindow() 直接报错。
---    实际踩法：Obsidian 没开，但编辑器开着 obsidian_chatbox_management.lua 这种标题的窗口。
+-- 按 App 名找运行中的应用 —— 实现只有一份，在 modules/utils.lua 里
+-- ⚠️ 这里必须【延迟 require】：modules/utils.lua 在文件顶层 require 了本模块，
+--    本模块要是也在顶层 require 它就成环了。等函数真被调用时两边都加载完了，拿着是安全的。
+--    （同 CLAUDE.md 里 hs.spaces 那条延迟 require 的约定）
 local function getRunningApp(appName)
-    local wanted = appName:lower()
-    for _, app in ipairs(hs.application.runningApplications()) do
-        local name = app:name()
-        if name and name:lower() == wanted then return app end
-    end
-    return nil
+    return require("modules.utils").getRunningApp(appName)
 end
 
 -- 把窗口挪到「它所在屏幕正在显示的 space」，然后聚焦
