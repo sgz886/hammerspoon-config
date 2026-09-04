@@ -1,9 +1,11 @@
 -- ============================================================
 -- utils/move_window_to_space.lua
--- 用 yabai 在 space 之间安排窗口。三个公开函数：
---   · focus_app(appName)                   ⭐ 聚焦 App 的首选入口，内置屏上的窗口不挪，其余交给下面那个
---   · focus_app_to_current_space(appName)  把指定 App 的窗口拉到「它所在屏幕正在显示的 space」并聚焦
---   · move_focused_window(direction)       把当前聚焦窗口移到同屏左边 / 右边的 space，焦点留在原地
+-- 用 yabai 在 space 之间安排窗口。公开函数：
+--   · focus_app(appName, onReady?, timeout?)  ⭐ 聚焦 App 的唯一入口（含连按保护 + 就绪等待）
+--   · move_focused_window(direction)          把当前聚焦窗口移到同屏左边 / 右边的 space，焦点留在原地
+--   · app_is_ready(appName)                   App 是否已在前台且有窗口，供调用方自己判断
+-- 其余（focusAppToCurrentSpace 等）都是文件内私有，故意不暴露 —— 绕过 focus_app
+-- 就没有连按保护和就绪等待了。
 --
 -- 共同前提：
 --   ⭐ 移动交给 yabai，不模拟鼠标 / 键盘，所以快，也不会被 Mission Control 动画卡住
@@ -13,7 +15,6 @@
 --
 -- 测试:
 --   hs -c 'require("utils.move_window_to_space").focus_app("Obsidian")'
---   hs -c 'require("utils.move_window_to_space").focus_app_to_current_space("Obsidian")'
 --   hs -c 'require("utils.move_window_to_space").move_focused_window("right")'
 -- ============================================================
 local yabai = require("utils.yabai")
@@ -137,6 +138,7 @@ end
 
 --- 把当前聚焦窗口移到同屏左边 / 右边的 space（焦点留在原地）
 -- 到边缘时在本屏内循环：第 1 格往左 → 最后 1 格，最后 1 格往右 → 第 1 格。
+-- 绕圈的那一下会弹 alert —— 焦点留在原地，窗口"凭空"跑到另一头很容易让人懵。
 -- @param direction string  "left" 或 "right"
 -- @return boolean  是否成功
 -- @return string?  失败原因
@@ -163,13 +165,30 @@ function M.move_focused_window(direction)
     end
 
     -- 本屏内循环：先转成 0-based 再取模，回到 1-based
-    local target = spaces[(currentPos - 1 + step) % #spaces + 1]
+    local targetPos = (currentPos - 1 + step) % #spaces + 1
+    local target    = spaces[targetPos]
+
+    -- 这一步是不是绕了一圈（从一头跳到另一头）
+    local wrapped = (step > 0 and currentPos == #spaces)
+                 or (step < 0 and currentPos == 1)
 
     local ok, cmdErr = yabai.command("window", win.id, "--space", target.index)
     if not ok then return fail(cmdErr) end
 
     print(string.format("[move_window_to_space] ✅ '%s' 已从 space %d 移到 space %d（屏幕 %d，方向 %s）",
         win.app or "?", win.space, target.index, win.display, direction))
+
+    if wrapped then
+        local msg
+        if step > 0 then
+            msg = string.format("🔄 已到最右一格，绕回第 1 格（space %d → %d）", win.space, target.index)
+        else
+            msg = string.format("🔄 已到最左一格，绕到最后 1 格（space %d → %d）", win.space, target.index)
+        end
+        hs.alert.show(msg)
+        print("[move_window_to_space] " .. msg)
+    end
+
     return true
 end
 
@@ -230,14 +249,15 @@ local function pullWindowIntoView(win, appName)
     return true
 end
 
---- 把指定 App 的窗口拉到「它所在屏幕正在显示的 space」并聚焦
+-- 把指定 App 的窗口拉到「它所在屏幕正在显示的 space」并聚焦
 -- App 被隐藏了也能唤出来。没运行、或者窗口被 ⌘W 关掉时，交给 launchOrFocus 就行 ——
 -- ⭐ 新窗口一定会落在某块屏幕当前显示的 space 上，本来就不需要我们再挪一次。
--- ⚠️ 这里【不做】连按保护。防连按在 focus_app 里，直接调这个函数就没人拦。
+-- ⚠️ 私有：连按保护和就绪等待都在 focus_app 里，绕过它直接调这条路会丢掉那两层保护，
+--    所以只给 focus_app 用，不对外暴露。
 -- @param appName string  应用名，如 "Obsidian"
 -- @return boolean  是否成功
 -- @return string?  失败原因
-function M.focus_app_to_current_space(appName)
+local function focusAppToCurrentSpace(appName)
     if invalidAppName(appName) then
         return fail(string.format("appName 必须是非空字符串，收到 '%s'", tostring(appName)))
     end
@@ -339,7 +359,7 @@ function M.focus_app(appName, onReady, timeout)
             ok, err = fail(string.format("聚焦不了 '%s'", appName))
         end
     else
-        ok, err = M.focus_app_to_current_space(appName)
+        ok, err = focusAppToCurrentSpace(appName)
     end
 
     -- 聚焦成功就盯着它到就绪：既是 onReady 的触发条件，也是下一次连按的拦截依据
