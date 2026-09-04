@@ -9,11 +9,12 @@ require("modules.assign_shortcut_to_function")
 
 cursorSelect = require("utils.get_cursor_selected_text")
 
--- ⭐ 暴露工作流为全局变量，for wgesture call
-workflow = {
-  sendToApp = function(sessionName)
-    require("modules.utils").sendSelectionToChatboxSession(sessionName)
+-- ⭐ 暴露全局变量，for wgesture call
+wgestures = {
+  moveApp = function(direction)
+    require("utils.move_window_to_space").move_focused_window(direction)
   end,
+  sendToChatbox = function(sessionName)
+    require("modules.utils").focusChatboxAndExecute(sessionName)
+  end
 }
--- for wgesture call
-move_app = require("utils.move_window_to_space")

@@ -11,7 +11,7 @@
 --   ⭐ 移动交给 yabai，不模拟鼠标 / 键盘，所以快，也不会被 Mission Control 动画卡住
 --      （yabai v7 起不需要 scripting addition，SIP 开着也能用）
 --   ⚠️ 窗口永远不跨显示器 —— 只在它自己所在那块屏幕的 space 里挪
---   · 移动本身全同步；只有 focus_app 的 onReady 回调会起一个轮询 timer
+--   · 移动本身全同步；只有 focus_app 的就绪等待会起 timer（轮询 + 沉降各一个）
 --
 -- 测试:
 --   hs -c 'require("utils.move_window_to_space").focus_app("Obsidian")'
@@ -30,7 +30,11 @@ local BUILTIN_SCREEN_PATTERNS = { "Built%-in", "内置" }
 
 -- 等 App 到前台的上限（秒）和轮询间隔。冷启动 Electron 应用可能要好几秒
 local READY_TIMEOUT = 5
-local READY_POLL    = 0.05
+local READY_POLL    = 0.1
+
+-- ⭐ 沉降期（秒）：窗口出现 ≠ 里面的组件加载完了。Electron 之类的 App 窗口先画出来，
+--    输入框 / 快捷键响应还要再等一会儿，这时候发按键会打空。所以检测到就绪后再缓一下。
+local READY_SETTLE = 0.75
 
 -- ──────────── 通用内部工具 ────────────
 
@@ -286,6 +290,8 @@ local readyWaits = {}
 --- App 是不是已经就绪：在前台 + 有窗口
 -- ⭐ 「在前台」才是关键 —— hs.eventtap.keyStroke 是发给前台 App 的，
 --    只判断「窗口出现了」的话，键盘事件可能还打在旧的前台 App 身上。
+-- ⚠️ 这是个同步谓词，会被轮询每 READY_POLL 秒调一次，所以里面不能有任何等待。
+--    「窗口出现后再缓 READY_SETTLE 秒」那层在 whenAppReady 里做。
 -- @param appName string
 -- @return boolean
 function M.app_is_ready(appName)
@@ -298,33 +304,67 @@ function M.app_is_ready(appName)
 end
 
 -- 等 App 就绪，就绪后执行 onReady（onReady 可以是 nil —— 那这就只是一次「等它起来」的守卫）
--- readyWaits[appName] 有值 = 这个 App 正在等就绪，focus_app 靠它拦掉连按
--- ⚠️ 超时【不会】回调 —— 不然后续 keystroke 会打到别的 App 身上，那比什么都不做更糟
-local function whenAppReady(appName, onReady, timeout)
+-- 两个阶段：
+--   ① 轮询等「到前台 + 有窗口」，最多 timeout 秒
+--   ② 沉降 settle 秒等组件加载，然后复查一次，才算真就绪。settle 为 0 就跳过这一步
+-- readyWaits[appName] 有值 = 这个 App 还在①或②里，focus_app 靠它拦掉连按 ——
+-- 所以沉降期结束前锁一直握着，别提前清掉。
+-- ⚠️ 超时 / 沉降期里又跑到后台，都【不会】回调 —— keystroke 打到别的 App 身上比什么都不做更糟
+-- @param settle number?  沉降秒数，0 或省略表示不沉降
+local function whenAppReady(appName, onReady, timeout, settle)
     timeout = timeout or READY_TIMEOUT
+    settle  = settle or 0
     local deadline = hs.timer.secondsSinceEpoch() + timeout
 
-    readyWaits[appName] = hs.timer.waitUntil(
+    -- 放锁 + 报错的统一出口
+    local function abort(reason)
+        readyWaits[appName] = nil
+        fail(reason .. (onReady and "，后续动作已取消" or ""))
+    end
+
+    -- 真就绪：放锁 + 回调
+    local function finish()
+        readyWaits[appName] = nil
+        print(string.format("[move_window_to_space] ✅ '%s' 已就绪", appName))
+        if onReady then onReady() end
+    end
+
+    local waitTimer
+    waitTimer = hs.timer.waitUntil(
         function()
             return M.app_is_ready(appName) or hs.timer.secondsSinceEpoch() > deadline
         end,
         function()
-            readyWaits[appName] = nil
+            if waitTimer then waitTimer:stop() end
             if not M.app_is_ready(appName) then
-                fail(string.format("等了 %.0f 秒 '%s' 还是没到前台%s",
-                    timeout, appName, onReady and "，后续动作已取消" or ""))
+                abort(string.format("等了 %.0f 秒 '%s' 还是没到前台", timeout, appName))
                 return
             end
-            print(string.format("[move_window_to_space] ✅ '%s' 已就绪", appName))
-            if onReady then onReady() end
+
+            -- 窗口本来就在（只是切了个前台）→ 组件早加载好了，不用等
+            if settle <= 0 then return finish() end
+
+            -- ② 窗口是刚新建的，里面的组件未必加载完，再缓一下
+            print(string.format("[move_window_to_space] '%s' 窗口是新建的，再等 %.1fs 让组件加载完",
+                appName, settle))
+            readyWaits[appName] = hs.timer.doAfter(settle, function()
+                if not M.app_is_ready(appName) then
+                    abort(string.format("'%s' 在这 %.1fs 里又离开了前台", appName, settle))
+                    return
+                end
+                finish()
+            end)
         end,
         READY_POLL)
+    readyWaits[appName] = waitTimer
 end
 
 --- 聚焦指定 App —— 对外首选入口
 --   · App 有窗口且窗口在【内置屏】上 → 直接 launchOrFocus，让 macOS 自己切过去，窗口不动
 --   · 其余情况（窗口在外接屏 / App 没运行 / 窗口被关了）→ 走 focus_app_to_current_space
 -- 每次调用都会盯着这个 App 直到它真的在前台且有窗口（最多等 timeout 秒），期间：
+--   · ⭐ 只有【窗口是新建的】那次（进来时 App 没窗口）才额外沉降 READY_SETTLE 秒等组件加载；
+--     App 本来就开着、只是切前台 / 挪 space 的话，组件早好了，不多等一毫秒
 --   · ⭐ 同一个 App 的重复调用一律忽略 —— 冷启动要好几秒，用户看不到窗口就会连按快捷键
 --   · 传了 onReady 的话，就绪后才执行它；冷启动时后续的 keyStroke 得挂在这里，别用固定延时去赌
 -- @param appName string    应用名，如 "Obsidian"
@@ -349,6 +389,10 @@ function M.focus_app(appName, onReady, timeout)
     local win = app and app:mainWindow()
     local info = win and win:id() and getWindowInfo(win:id())
 
+    -- ⭐ 现在没窗口 = 待会儿那个窗口是新建的，需要沉降等组件加载；
+    --    已经有窗口就只是切前台 / 挪 space，不用等。
+    local settle = win and 0 or READY_SETTLE
+
     -- 判断不了内置屏的时候不报错，直接落到通用路径
     if info and isBuiltinDisplay(info.display) then
         print(string.format("[move_window_to_space] '%s' 在内置屏（space %s），直接 launchOrFocus",
@@ -363,7 +407,7 @@ function M.focus_app(appName, onReady, timeout)
     end
 
     -- 聚焦成功就盯着它到就绪：既是 onReady 的触发条件，也是下一次连按的拦截依据
-    if ok then whenAppReady(appName, onReady, timeout) end
+    if ok then whenAppReady(appName, onReady, timeout, settle) end
     return ok, err
 end
 
