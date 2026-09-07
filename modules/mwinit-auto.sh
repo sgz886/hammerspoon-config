@@ -11,6 +11,16 @@
 
 set timeout 60
 
+# ─── 补 PATH ───────────────────────────────────────────
+# ⚠️ 本脚本由 iTerm 的 `command` 参数直接启动，中间不经过任何 shell，
+#    所以没有 path_helper —— PATH 只有 launchd 默认的
+#    /usr/bin:/bin:/usr/sbin:/sbin（`launchctl getenv PATH` 是空的）。
+#    security(/usr/bin) 和 stty(/bin) 够用，但 mwinit 在 /usr/local/bin，必须自己加。
+set env(PATH) "/usr/local/bin:/opt/homebrew/bin:$env(PATH)"
+
+# ─── 用户名：不经过 shell 时 USER 不保证有 ──────────────
+set userName [expr {[info exists env(USER)] ? $env(USER) : [exec id -un]}]
+
 # ─── hs CLI：Hammerspoon 的命令行入口 ──────────────────
 # 依赖 init.lua 里的 require("hs.ipc") 打开消息端口
 set HS_BIN ""
@@ -25,6 +35,22 @@ foreach candidate {
     }
 }
 
+# ─── 弹 Hammerspoon 提示 ───────────────────────────────
+# ⭐ 提示必须从这里发，不能在 Lua 侧的 M.mwinit() 里发：
+#    hs.alert 底层是 hs.canvas，默认 behavior 是 0（不含 canJoinAllSpaces /
+#    moveToActiveSpace），所以 alert 会被钉死在「创建那一瞬间活动的那个 Space」上，
+#    之后 Space 怎么切它都不动。而 hs.osascript.applescript 返回时 macOS 的
+#    Space 切换还没走完（实测晚约 0.5s）—— iTerm 在别的 Space 时，
+#    Lua 侧发的 alert 就留在旧 Space / 旧屏幕上，你根本看不见。
+#    从脚本这里发的时候 iTerm 早就在前台了，Space 和屏幕都是对的。
+#    `&` 后台跑：别让这次 hs 往返（~100ms+）卡在 interact 前面。
+#    `>& /dev/null`：hs.alert.show 会回一个 UUID，不吞掉的话会吐到 mwinit 窗口里。
+proc hsAlert {msg} {
+    global HS_BIN
+    if {$HS_BIN eq ""} { return }
+    catch {exec $HS_BIN -c "hs.alert.show(\"$msg\", {textSize = 36, radius = 12}, 3)" >& /dev/null &}
+}
+
 # ─── 等用户按一个键（raw 模式读 1 字符）───────────────
 proc waitAnyKey {prompt} {
     puts -nonewline $prompt
@@ -37,7 +63,27 @@ proc waitAnyKey {prompt} {
     return $key
 }
 
+# ─── mwinit 绝对路径 ───────────────────────────────────
+# 显式探测，这样找不到时能给出人能看懂的提示，而不是 expect 的 couldn't execute
+set MWINIT_BIN ""
+foreach candidate {
+    /usr/local/bin/mwinit
+    /usr/local/amazon/bin/mwinit
+    /opt/homebrew/bin/mwinit
+} {
+    if {[file executable $candidate]} {
+        set MWINIT_BIN $candidate
+        break
+    }
+}
+if {$MWINIT_BIN eq ""} {
+    puts stderr "❌ 找不到 mwinit 可执行文件"
+    waitAnyKey "按任意键关闭窗口: "
+    exit 1
+}
+
 # ─── 0. 等待用户确认 ───────────────────────────────────
+hsAlert "\\u{1F446} 准备 mwinit login"
 set key [waitAnyKey "按任意键开始 mwinit,按 n 取消: "]
 if { $key eq "n" || $key eq "N"} {
     # 不标记 —— 今天下次解锁还会再问一次
@@ -47,14 +93,14 @@ if { $key eq "n" || $key eq "N"} {
 
 # 1. 从 Keychain 取出 PIN
 if {[catch {
-    set pin [exec security find-generic-password -a $env(USER) -s mwinit -w]
+    set pin [exec security find-generic-password -a $userName -s mwinit -w]
 } err]} {
     puts stderr "❌ 无法从 Keychain 读取 PIN: $err"
     exit 1
 }
 
 # 2. 启动 mwinit
-spawn mwinit --fido2
+spawn $MWINIT_BIN --fido2
 
 # 3. 等待 PIN 提示并发送
 expect {
@@ -62,11 +108,20 @@ expect {
     timeout       { puts stderr "❌ 等待 PIN 提示超时"; exit 1 }
     eof           { puts stderr "❌ mwinit 意外退出"; exit 1 }
 }
-# 4. 把后续交互交还给用户（等待触摸 YubiKey）
+# 4. PIN 已送出，接下来就该摸 key 了 —— 这时候才提示，时机才对
+#    ⚠️ emoji 必须写成 Lua 的 \u{...} 转义，不能直接把字符写在这里：
+#       macOS 自带的是 Tcl 8.5（内部 UCS-2），装不下 BMP 以外的字符 ——
+#       👆 是 U+1F446，Tcl 会把它的 4 个 UTF-8 字节当成 4 个 Latin-1 字符，
+#       出去时再各自编码一遍，Hammerspoon 收到的就是 `ð` + 3 个不可见控制字符。
+#       写成转义序列后 Tcl 只搬运 ASCII，由 Lua 5.4 自己解码，字节才是对的。
+#       （中文在 BMP 内，直接写没问题）
+hsAlert "\\u{1F446} 请触摸 USB 安全密钥"
+
+# 5. 把后续交互交还给用户（等待触摸 YubiKey）
 #    interact 会把当前 tty 连接到 mwinit，直到它退出
 interact
 
-# ─── 5. interact 返回后：判断 mwinit 到底成没成 ────────
+# ─── 6. interact 返回后：判断 mwinit 到底成没成 ────────
 # interact 在 mwinit EOF/退出后会返回，脚本继续往下跑。
 # 注意：interact 不会更新 $expect_out，所以只能靠退出码判断。
 # wait 返回 {pid spawn_id os_error_flag value}
@@ -106,5 +161,7 @@ if {$exitStatus == 0} {
 }
 
 # 主动退出，关闭 iTerm 窗口
-# 注意：需要在 Lua 里用 write text "exec %s"
+# 本脚本就是 session 的进程本身（Lua 侧用的是
+# `create window with default profile command "..."`），
+# 所以脚本一退出 session 就结束，窗口按 profile 的「When session ends」设置关闭。
 exit $exitStatus

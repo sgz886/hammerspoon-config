@@ -22,7 +22,7 @@ test-step2.lua  ⚠️ 同上
 | `utils.lua` | 共享工具中枢：切换/聚焦 App、窗口布局、`sequence`、发送到 Chatbox |
 | `obsidian_chatbox_management.lua` | `⌃⇧⌘Z`：按当前前台 App 三态切换，把 Obsidian + Chatbox 平铺到当前 Space |
 | `kiro-cli_copy_and_send_to_chatbox_translate.lua` | `⌘⌥T`：在 Kiro CLI 里 copy，再丢给 Chatbox 的 translator |
-| `mwinit.lua` + `mwinit-auto.sh` + `mwinit.md` | 每天自动跑一次 Amazon SSO 登录（见下文） |
+| `mwinit.lua` + `mwinit-auto.sh` + `mwinit_test.md` | 每天自动跑一次 Amazon SSO 登录（见下文） |
 | `unlock_watcher.lua` | `hs.caffeinate.watcher` 事件分发；mwinit 的唯一调用方 |
 | `sleep_mute.lua` | 息屏静音、解锁 3 秒后恢复原音量（带 5 次读回重试） |
 | `test.lua` | 音量/睡眠的手动测试台，作为全局 `test` 加载，在控制台调 `test.help()` |
@@ -108,23 +108,26 @@ init.lua → unlock_watcher.start()
   ├─ screensDidUnlock 事件           (unlock_watcher.lua:28-33)
   └─ start() 里的开机补偿 timer       (unlock_watcher.lua:57-59，处理 Hammerspoon 比解锁事件晚启动)
        └─ 都 doAfter(60s) → mwinit.runOncePerDay()
-            └─ AppleScript 让 iTerm 跑 `exec ~/.hammerspoon/modules/mwinit-auto.sh`
-                 └─ expect 自动填 PIN → interact 等用户摸 YubiKey
+            └─ AppleScript `create window with default profile command "…/mwinit-auto.sh"`
+                 └─ expect 自动填 PIN → hsAlert 提示摸 key → interact 等用户摸 YubiKey
                       └─ ⭐ 只有 mwinit 退出码 0 时，脚本才 `hs -c` 回调 markSuccess()
 ```
 
 **关键设计：「今天已完成」标记只在真正登录成功后才写。** `markSuccess()` 是唯一写 `hs.settings` 的地方，由 `mwinit-auto.sh` 在 `interact` 之后用 `hs -c` 回调。取消（按 `n`）、PIN 读取失败、没摸 key 等一律不写标记，今天下次解锁会重试。改这块时注意：
 
-- AppleScript 用的是 `write text "exec ..."`，expect 退出后**没有 shell 残留**，所以任何成功信号都必须在 expect 脚本内部发出。
+- AppleScript 用 iTerm 的 `command` 参数把脚本**直接当 session 进程**启动，expect 就是那个进程本身、退出后没有 shell 残留，所以任何成功信号都必须在 expect 脚本内部发出。
 - `hs.osascript.applescript` 是 fire-and-forget，Lua 侧拿不到脚本结果 —— 只能靠脚本反向回调。
 - expect 的 `interact` 在被 spawn 的进程退出后会返回，用 `wait` 取退出码；`interact` **不会**更新 `$expect_out`，所以别想靠输出文本判断。
 - `pendingSince` / `PENDING_TIMEOUT`（`mwinit.lua`）只是防止 60s 窗口内重复解锁或补偿 timer 叠加、开出多个抢同一个 tty 的 iTerm 窗口，**不是**重试冷却。
+- 「👆 请触摸 USB 安全密钥」这个提示由 **脚本** 里的 `hsAlert` 发（送出 PIN 之后），不在 Lua 侧发 —— 原因见下面「别动这些」里的 Space 那条。
 
-外部依赖：Keychain 条目（`security find-generic-password -a $USER -s mwinit -w`）、`/usr/local/bin/mwinit`、`/usr/bin/expect`、iTerm2、`hs` CLI。调试命令见 `modules/mwinit.md`。
+外部依赖：Keychain 条目（`security find-generic-password -a $USER -s mwinit -w`）、`/usr/local/bin/mwinit`、`/usr/bin/expect`、iTerm2、`hs` CLI。调试命令见 `modules/mwinit_test.md`。
 
 ## 别动这些（都是踩过坑的）
 - **`sleep_mute` 必须监听 `screensDidSleep` 而不是 `systemWillSleep`**：系统 idle 之后永远不会进 system sleep。见 `sleep_mute.lua:67` 和 commit `7fef8f2`。
 - 定时器/watcher 的引用要存起来，同上面的 GC 陷阱。
+- **`mwinit-auto.sh` 里的 `set env(PATH)` 不能删**：脚本由 iTerm 的 `command` 参数直接启动，中间不经过任何 shell，也就没有 `path_helper` —— PATH 只有 launchd 默认的 `/usr/bin:/bin:/usr/sbin:/sbin`（`launchctl getenv PATH` 是空的）。而 `mwinit` 在 `/usr/local/bin`，不补 PATH 会直接 `couldn't execute`。同理别把 `write text "exec ..."` 改回来 —— 那个写法要白等 zsh + oh-my-zsh + p10k 初始化（实测 0.8~1.3s）。
+- **⚠️ 切 Space / 切窗口之后不要马上 `hs.alert.show`**：`hs.alert` 底层是 `hs.canvas`，默认 behavior 是 `0`（不含 `canJoinAllSpaces` / `moveToActiveSpace`），alert 会被**钉死在「创建那一瞬间活动的那个 Space」**上，之后 Space 怎么切它都不动；`screen` 参数默认取 `hs.screen.mainScreen()`（= 当前有焦点窗口的那块屏），多屏时同理会取错。而 `hs.osascript.applescript` 虽然是同步返回的，返回时 macOS 的 Space 切换**还没走完**（实测晚约 0.5s）。所以 mwinit 的提示挪进了 `mwinit-auto.sh` 的 `hsAlert`（那时 iTerm 早在前台，Space 和屏幕都对）。别把它挪回 `M.mwinit()` 里 —— iTerm 在别的 Space 时你会看不见那个提示。
 
 ## 已知遗留问题（历史遗留，不用顺手修）
 

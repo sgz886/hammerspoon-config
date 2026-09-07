@@ -5,8 +5,10 @@
 
 local M = {}
 
--- 脚本路径（展开 ~ 到真实 home 目录）
-local SCRIPT_PATH = os.getenv("HOME") .. "/.hammerspoon/modules/mwinit-auto.sh"
+-- 脚本路径
+-- ⚠️ 必须是绝对路径：iTerm 的 command 参数不经过 shell（`~` 不会被展开），
+--    而且 session 的 cwd 由 profile 的 Working Directory 决定，不是 .hammerspoon
+local SCRIPT_PATH = hs.configdir .. "/modules/mwinit-auto.sh"
 
 -- hs.settings 里存储"上次成功登录日期"的 key
 -- ⭐ 只有 mwinit-auto.sh 走完 interact 且 mwinit 成功退出后，
@@ -30,42 +32,23 @@ function M.mwinit()
     end
     f:close()
 
-    -- 2. 判断 iTerm2 是否已在运行
-    --    hs.application.get 对已运行的 app 返回 app 对象，否则 nil
-    local iterm = hs.application.get("iTerm2") or hs.application.get("iTerm")
-    local wasRunning = iterm ~= nil
-
-    -- 3. 构造 AppleScript
-    --    - 已运行：create window with default profile → 在新窗口执行
-    --    - 未运行：直接 activate 会自动开一个窗口，再 write 即可
-    --    iTerm2 的 AppleScript 模型：application → window → tab → session
-    --    `write text` 是发送到 current session 的命令
-    local applescript
-    print("start")
-    print(string.format("iterm was Running = %s", wasRunning))
-    if wasRunning then
-        applescript = string.format([[
-            tell application "iTerm"
-                create window with default profile
-                tell current session of current window
-                    write text "exec %s"
-                end tell
-            end tell
-        ]], SCRIPT_PATH)
-    else
-        -- 冷启动：activate 会自动创建一个窗口，不需要再 create
-        applescript = string.format([[
-            tell application "iTerm"
-                activate
-                repeat until (count of windows) > 0
-                    delay 0.1
-                end repeat
-                tell current session of current window
-                    write text "exec %s"
-                end tell
-            end tell
-        ]], SCRIPT_PATH)
-    end
+    -- 2. 构造 AppleScript
+    --    ⭐ `command` 参数：脚本直接作为 session 进程启动，不经过 login shell
+    --       → 不用白等 zsh/oh-my-zsh/p10k 初始化（实测省 0.8~1.3s），
+    --         也不会打出 "Last login" 和一行重复回显的脚本路径
+    --       （旧写法是 `write text "exec ..."`，那是模拟键盘输入，
+    --         文本得排队等 zsh 加载完读 stdin 才执行，1 秒延迟就来自这里）
+    --    ⚠️ SCRIPT_PATH 里不能有空格 —— iTerm 会对 command 做 argv 拆分
+    --
+    --    `launch` 而不是 `activate`：launch 发的是 no-op Apple event，
+    --    不触发 open-untitled，所以冷启动不会多冒一个空窗口；
+    --    对已在运行的 iTerm 是 no-op —— 一句话覆盖「在跑 / 没在跑」两种情况
+    local applescript = string.format([[
+        tell application "iTerm"
+            launch
+            create window with default profile command "%s"
+        end tell
+    ]], SCRIPT_PATH)
     local ok, result = hs.osascript.applescript(applescript)
     if not ok then
         hs.alert.show("❌ 启动 iTerm2 失败")
@@ -73,11 +56,11 @@ function M.mwinit()
         return
     end
 
-    -- 4. 弹提示让用户按 YubiKey
-    hs.alert.show("👆 请触摸 USB 安全密钥", {
+    -- 3. 弹提示让用户按 YubiKey
+    hs.alert.show("👆开始 mwinit login", {
         textSize = 36,
         radius = 12,
-    }, 5)  -- 显示 5 秒
+    }, 3)  -- 显示 3 秒
 end
 
 --- 由 mwinit-auto.sh 在成功后通过 `hs -c` 回调：
