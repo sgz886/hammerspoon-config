@@ -51,9 +51,7 @@ function M.main()
 
   -- 3) 切到 Chatbox。布局总要做，发送只在真有选中时才做，都挂在就绪回调里
   local onChatboxReady = needSendTextToChatbox and layoutChatboxAndSend or layoutChatbox
-  window_control.focusChatboxThenExecute("text_polish", onChatboxReady)
+  window_control.focusChatboxThenExecute(common.CHATBOX_SESSION.TEXT_POLISH, onChatboxReady)
 end
 
 return M
-
--- // TODO: 26/09/08 21:41 : text polish to common.lua

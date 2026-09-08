@@ -545,14 +545,38 @@ function M.move_focused_window_with_direction(direction)
 end
 
 -- ============================================
+-- resolveSessionHotkey: session 名 → ⌘+数字
+-- ⚠️ sessionName 是外部输入（wgestures / hs -c 手敲），认不出来就当场报错，
+--    别让 nil 一路漏到 keyStroke 里 —— 那会切完 App 才炸，现场只剩「什么也没发生」。
+-- @param sessionName string
+-- @return string?  认不出来返回 nil（已提示用户）
+-- ============================================
+local function resolveSessionHotkey(sessionName)
+  local hotkey = common.CHATBOX_SESSION_HOTKEY[sessionName]
+  if not hotkey then
+    local valid = {}
+    for name in pairs(common.CHATBOX_SESSION_HOTKEY) do table.insert(valid, name) end
+    table.sort(valid)
+    fail(string.format("未知的 Chatbox session: %s（可用：%s）",
+                       tostring(sessionName), table.concat(valid, ", ")))
+    return nil
+  end
+  return hotkey
+end
+
+-- ============================================
 -- pasteClipboardToChatbox: 在 Chatbox 里切到指定 session → 新建对话 → 粘贴 → 发送
 -- ⚠️ 不负责切换 App。调用前 Chatbox 必须【已经在前台】，否则这串按键会打到别的 App 上，
 --    所以只在 M.focus_app 的 onReady 回调里调它。
--- @param sessionName string  text_polish , translator
+-- @param sessionName string  见 common.CHATBOX_SESSION
 -- ============================================
 function M.pasteClipboardToChatbox(sessionName)
+  -- ⭐ 先取好 hotkey 再进 sequence：查表放到 timer 回调里的话，按键那一步还能失败一次
+  local hotkey = resolveSessionHotkey(sessionName)
+  if not hotkey then return end
+
   common.sequence({
-    {0.2, function() hs.eventtap.keyStroke({"cmd"}, common.CHATBOX_SESSION[sessionName]) end},
+    {0.2, function() hs.eventtap.keyStroke({"cmd"}, hotkey) end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "return") end},
   })
@@ -563,10 +587,13 @@ end
 -- ⭐ execute 挂在 focus_app 的就绪回调里，不用固定延时去赌 Chatbox 什么时候起来 ——
 --    App 被整个关掉过的话冷启动要好几秒。没能在超时时间内到前台，execute 就不会执行
 --    （keyStroke 打到别的 App 上比什么都不做更糟，这条由 focus_app 保证）。
--- @param sessionName string   转发给 execute，见 session 表
+-- @param sessionName string   转发给 execute，见 common.CHATBOX_SESSION
 -- @param execute function?    Chatbox 就绪后执行，签名 execute(sessionName)；不传就只聚焦
 -- ============================================
 function M.focusChatboxThenExecute(sessionName, execute)
+  -- ⭐ 校验放在切 App 之前：名字错了就什么都别做，省得切过去再失败
+  if not resolveSessionHotkey(sessionName) then return end
+
   M.focus_app(common.CHATBOX_APP, function()
     if execute then execute(sessionName) end
   end)
@@ -574,7 +601,8 @@ end
 
 -- ============================================
 -- copyToChatbox: 复制选中 → 切到 Chatbox → 粘贴发送
--- @param sessionName string  text_polish , translator
+-- ⭐ 外部入口（wgestures.sendToChatbox）就打在这里，sessionName 是字符串
+-- @param sessionName string  见 common.CHATBOX_SESSION
 -- ============================================
 function M.copyToChatbox(sessionName)
   common.sequence({
