@@ -1,6 +1,6 @@
-local utils = require("modules.utils")
+local common = require("utils.common")
+local window_control = require("utils.window_control")
 local cursorSelection = require("utils.get_cursor_selected_text")
-local move_window = require("utils.move_window_to_space")
 
 -- 平铺用的比例矩形
 -- Obsidian 只约束横向：贴在屏幕正中间那 1/3，纵向（y / 高度）保持窗口原状，
@@ -8,21 +8,20 @@ local move_window = require("utils.move_window_to_space")
 local OBSIDIAN_UNIT = { x = 1 / 3, w = 1 / 3 }
 local CHATBOX_RECT  = { 0, 0, 1 / 3, 1 }
 
-local CHATBOX_SESSION = "text_polish"
 
 local function setAppLayout(appName, unitRect)
-  utils.setAppLayout(appName, unitRect)
+  window_control.setAppLayout(appName, unitRect)
 end
 
 -- Chatbox 就绪后的两种收尾动作。签名都对齐 focusChatboxThenExecute 的 execute(sessionName)，
 -- 所以能直接按引用传过去，不用包闭包。（layoutChatbox 用不到 sessionName，Lua 会忽略多余实参）
 local function layoutChatbox()
-  setAppLayout("Chatbox", CHATBOX_RECT)
+  setAppLayout(common.CHATBOX_APP, CHATBOX_RECT)
 end
 
 local function layoutChatboxAndSend(sessionName)
   layoutChatbox()
-  utils.pasteClipboardToChatbox(sessionName)
+  window_control.pasteClipboardToChatbox(sessionName)
 end
 
 local M = {}
@@ -30,8 +29,8 @@ function M.main()
   local app = hs.application.frontmostApplication()
   local name = app and app:name() or ""
 
-  if name ~= "Obsidian" then
-    move_window.focus_app("Obsidian")
+  if name ~= common.OBSIDIAN_APP then
+    window_control.focus_app(common.OBSIDIAN_APP)
     return
   end
 
@@ -48,11 +47,13 @@ function M.main()
   end
 
   -- 2) Obsidian 就位（只调宽度和横向位置，高度不动）
-  utils.setAppLayoutPartialUnit("Obsidian", OBSIDIAN_UNIT)
+  window_control.setAppLayoutPartialUnit(common.OBSIDIAN_APP, OBSIDIAN_UNIT)
 
   -- 3) 切到 Chatbox。布局总要做，发送只在真有选中时才做，都挂在就绪回调里
   local onChatboxReady = needSendTextToChatbox and layoutChatboxAndSend or layoutChatbox
-  utils.focusChatboxThenExecute(CHATBOX_SESSION, onChatboxReady)
+  window_control.focusChatboxThenExecute("text_polish", onChatboxReady)
 end
 
 return M
+
+-- // TODO: 26/09/08 21:41 : text polish to common.lua

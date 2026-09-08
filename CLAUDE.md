@@ -41,7 +41,7 @@ test-step2.lua  ⚠️ 同上
 
 **模块形状**：一律 `local M = {} … function M.x() … return M`，私有函数用 `local function`。没有 OO、没有 metatable。
 
-**require 路径**：从 `.hammerspoon` 根算的点号路径 —— `require("modules.utils")`、`require("utils.move_app_across_spaces")`。`hs.spaces` 例外，它在函数内部延迟 require。
+**require 路径**：从 `.hammerspoon` 根算的点号路径 —— `require("utils.window_control")`、`require("utils.move_app_across_spaces")`。`hs.spaces` 例外，它在函数内部延迟 require。
 
 **两种加载方式**（`init.lua` 里两种都有）：
 - require 即自启：`sleep_mute`（`:87-88` 文件作用域启动 watcher）、`assign_shortcut_to_function`（文件作用域 bind）
@@ -97,7 +97,7 @@ test.help()                                                                     
 **in terminal**
 
 ```bash
-hs -c 'require("modules.utils").focusApp("Chatbox")'
+hs -c 'require("utils.window_control").toggleApp("Chatbox")'
 ```
 
 ## mwinit 每日自动登录

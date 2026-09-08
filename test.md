@@ -14,3 +14,9 @@ end)
 ```bash
 hs -c "wgestures.sendToChatbox('translator')"
 ```
+
+### window control
+```bash
+hs -c 'require("utils.window_control").focus_app("Obsidian")'
+hs -c 'require("utils.window_control").move_focused_window_with_direction("right")'
+```

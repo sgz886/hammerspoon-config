@@ -12,9 +12,9 @@ cursorSelect = require("utils.get_cursor_selected_text")
 -- ⭐ 暴露全局变量，for wgesture call
 wgestures = {
   moveApp = function(direction)
-    require("utils.move_window_to_space").move_focused_window(direction)
+    require("utils.window_control").move_focused_window_with_direction(direction)
   end,
   sendToChatbox = function(sessionName)
-    require("modules.utils").copyToChatbox(sessionName)
+    require("utils.window_control").copyToChatbox(sessionName)
   end
 }
