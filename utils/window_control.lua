@@ -39,6 +39,15 @@ local READY_POLL    = 0.05
 
 -- ──────────── 通用内部工具 ────────────
 -- 通用工具函数集合
+
+
+-- 失败的统一出口：控制台留日志，屏幕上给一眼能看懂的提示
+local function fail(reason)
+    print(string.format("[window_control] ❌ %s", reason))
+    hs.alert.show("⚠️ " .. reason)
+    return false, reason
+end
+
 local function invalidAppName(appName)
     return type(appName) ~= "string" or appName == ""
 end
@@ -249,18 +258,67 @@ local function whenAppReady(appName, onReady, timeout, settle)
     readyWaits[appName] = waitTimer
 end
 
--- todo: replace with hammerspoon built-in
--- 取当前聚焦窗口
+-- 取当前聚焦窗口（纯 Hammerspoon，不起 yabai 子进程）
+-- ⭐ display / space 仍然是 yabai 口径的序号，因为调用方（getSpacesOnDisplay /
+--    yabai.command）还得拿它们去跟 yabai 对话。换算依据：
+--    hs.spaces.data_managedDisplaySpaces() 和 yabai 读的是同一份 CGS 数据
+--    （SLSCopyManagedDisplaySpaces），连顺序都一样 —— 于是
+--      · yabai display index = 该屏幕在这个数组里的位置
+--      · yabai space index   = 该 space 在「所有屏幕拉平后」的位置（全屏 space 也算一格）
+-- ⭐ 不按 UUID 找屏幕，而是先定位 space、再取「装着它的那个 display」的下标 ——
+--    某些机型上 data 里主屏的 "Display Identifier" 是字符串 "Main" 而不是 UUID，
+--    按 UUID 匹配会扑空。
 -- @return table?   窗口信息（含 id / app / display / space）
 -- @return string?  错误信息
 local function getFocusedWindow()
-    local win, err = yabai.query("--windows", "--window")
-    -- ⚠️ 当前 space 空着的时候，yabai 是直接以非 0 退出码报错，而不是返回空对象
-    if not win or not win.id then
-        return nil, string.format("取不到当前聚焦窗口（这个 space 是空的？）%s",
-            err and ("：" .. err) or "")
+    local win = hs.window.focusedWindow()
+    local id = win and win:id()
+    -- ⚠️ 点一下桌面（或当前 space 空着）时，focusedWindow() 不返回 nil，而是返回 Finder 的
+    --    桌面元素（role = AXScrollArea，:id() == 0）。Lua 里 0 是真值，光判 `not id` 拦不住，
+    --    会一路把 `yabai window 0 --space N` 发出去，报 "could not locate the window to act on"。
+    --    真窗口的 CGWindowID 一定 > 0，所以这里按数值卡。
+    if type(id) ~= "number" or id <= 0 then
+        return nil, "当前没有聚焦任何窗口（点到桌面了？还是这个 space 是空的？）"
     end
-    return win
+
+    local screen = win:screen()
+    if not screen then
+        return nil, string.format("拿不到窗口 %d 所在的屏幕", id)
+    end
+
+    -- 聚焦窗口一定在「它所在屏幕正在显示的那格 space」上
+    local spaceId = hs.spaces.activeSpaceOnScreen(screen)
+    if not spaceId then
+        return nil, string.format("拿不到屏幕 '%s' 正在显示的 space", screen:name() or "?")
+    end
+
+    local displays = hs.spaces.data_managedDisplaySpaces()
+    if type(displays) ~= "table" then
+        return nil, "hs.spaces 取不到 CGS 的 display/space 数据"
+    end
+
+    local displayIndex, spaceIndex, counter = nil, nil, 0
+    for i, display in ipairs(displays) do
+        for _, space in ipairs(display.Spaces or {}) do
+            counter = counter + 1
+            if space.ManagedSpaceID == spaceId or space.id64 == spaceId then
+                displayIndex, spaceIndex = i, counter
+                break
+            end
+        end
+        if spaceIndex then break end
+    end
+    if not spaceIndex then
+        return nil, string.format("space %s 不在 hs.spaces 的数据里", tostring(spaceId))
+    end
+
+    local app = win:application()
+    return {
+        id      = id,
+        app     = app and app:name(),
+        display = displayIndex,
+        space   = spaceIndex,
+    }
 end
 
 -- 原生全屏 space 不接受外来窗口（yabai 会直接报错），挪窗口时得先排掉
@@ -272,14 +330,6 @@ local function filterMovable(spaces)
         end
     end
     return result
-end
-
-
--- 失败的统一出口：控制台留日志，屏幕上给一眼能看懂的提示
-local function fail(reason)
-    print(string.format("[window_control] ❌ %s", reason))
-    hs.alert.show("⚠️ " .. reason)
-    return false, reason
 end
 
 

@@ -13,6 +13,7 @@ end)
 
 ```bash
 hs -c "wgestures.sendToChatbox('translator')"
+hs -c "wgestures.sendToChatbox('text_polish')"
 ```
 
 ### window control
