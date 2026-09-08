@@ -159,8 +159,7 @@ local session = {
 function M.pasteClipboardToChatbox(sessionName)
   M.sequence({
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, session[sessionName]) end},
-    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "i") end},
-    {0.1, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
+    {0.2, function() hs.eventtap.keyStroke({"cmd"}, "v") end},
     {0.2, function() hs.eventtap.keyStroke({"cmd"}, "return") end},
   })
 end

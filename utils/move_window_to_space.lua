@@ -30,7 +30,7 @@ local BUILTIN_SCREEN_PATTERNS = { "Built%-in", "内置" }
 
 -- 等 App 到前台的上限（秒）和轮询间隔。冷启动 Electron 应用可能要好几秒
 local READY_TIMEOUT = 5
-local READY_POLL    = 0.1
+local READY_POLL    = 0.05
 
 -- ⭐ 沉降期（秒）：窗口出现 ≠ 里面的组件加载完了。Electron 之类的 App 窗口先画出来，
 --    输入框 / 快捷键响应还要再等一会儿，这时候发按键会打空。所以检测到就绪后再缓一下。

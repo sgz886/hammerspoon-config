@@ -55,13 +55,7 @@ function M.mwinit()
         print("AppleScript error:", hs.inspect(result))
         return
     end
-
-    -- 3. 弹提示让用户按 YubiKey
-    hs.alert.show("👆开始 mwinit login", {
-        textSize = 36,
-        radius = 12,
-    }, 3)  -- 显示 3 秒
-end
+            end
 
 --- 由 mwinit-auto.sh 在成功后通过 `hs -c` 回调：
 ---   hs -c 'require("modules.mwinit").markSuccess()'

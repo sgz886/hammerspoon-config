@@ -83,7 +83,7 @@ if {$MWINIT_BIN eq ""} {
 }
 
 # ─── 0. 等待用户确认 ───────────────────────────────────
-hsAlert "\\u{1F446} 准备 mwinit login"
+hsAlert "\\u{1F446} 开始 mwinit login"
 set key [waitAnyKey "按任意键开始 mwinit,按 n 取消: "]
 if { $key eq "n" || $key eq "N"} {
     # 不标记 —— 今天下次解锁还会再问一次
