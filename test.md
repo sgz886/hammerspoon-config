@@ -20,4 +20,6 @@ hs -c "wgestures.sendToChatbox('text_polish')"
 ```bash
 hs -c 'require("utils.window_control").focus_app("Obsidian")'
 hs -c 'require("utils.window_control").move_focused_window_with_direction("right")'
+hs -c 'require("utils.window_control").swap_space_and_app("right")'
+hs -c 'require("utils.window_control").switch_current_space("right", "yabai")'
 ```

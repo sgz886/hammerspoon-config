@@ -14,6 +14,12 @@ wgestures = {
   moveApp = function(direction)
     require("utils.window_control").move_focused_window_with_direction(direction)
   end,
+  moveSpaceAndApp = function(direction)
+    require("utils.window_control").swap_space_and_app(direction)
+  end,
+  changeCurrentSpace = function(direction, method)
+    require("utils.window_control").switch_current_space(direction, method)
+  end,
   sendToChatbox = function(sessionName)
     require("utils.window_control").copyToChatbox(sessionName)
   end
