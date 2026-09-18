@@ -44,7 +44,7 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 | `toggleApp(appName)` / `toggleAppByBundleID(id)` | 已在最前就隐藏，否则聚焦 |
 | `setAppLayout(appName, unitRect)` / `setAppLayoutPartialUnit(appName, unit)` | 按屏幕比例摆窗口；后者只改传了的那几项 |
 | `move_focused_window_with_direction(direction)` | 把当前聚焦窗口挪到同屏左 / 右那一格 space，焦点留在原地。**到边缘会在本屏内绕圈** |
-| `switch_current_space(direction, method?, onDone?)` | 把焦点切到【鼠标所在那块屏】左 / 右那一格。自带边缘判断（**不绕圈**）+ 切没切成的复查补发。`method` = `"shortcut"`（默认）/ `"yabai"`。**异步**：返回值只表示「发起了」，结果看 `onDone(landed)` |
+| `switch_current_space(direction, method?, onDone?)` | 把焦点切到【鼠标所在那块屏】左 / 右那一格。自带边缘判断（**不绕圈**）+ 切没切成的复查补发 + 连按保护。`method` = `"shortcut"`（默认）/ `"yabai"`。**异步**：返回值只表示「发起了」，结果看 `onDone(landed)`（**任何路径都保证被调用一次**，包括被连按保护拦掉时的 `onDone(false)`）|
 | `swap_space_and_app(direction)` | 把当前 space 跟同屏左 / 右那一格【整批互换窗口】，焦点跟着自己的窗口走 |
 | `copyToChatbox(sessionName)` / `focusChatboxThenExecute(...)` / `pasteClipboardToChatbox(...)` | 复制选中 → 切 Chatbox → 粘贴发送 |
 | `app_is_ready(appName)` | App 是否已在前台且有窗口。⚠️ 它是个**全局函数**（`window_control.lua:725` 写成了 `function app_is_ready(...)` 而不是 `function M.app_is_ready(...)`），所以要 `app_is_ready("X")` 这么调，不是 `window_control.app_is_ready("X")` |
@@ -156,9 +156,17 @@ yabai -m query --spaces | jq -r '.[] | "disp\(.display) index\(.index) id=\(.id)
 
 于是 `switch_current_space` 里：目标屏就是焦点屏 → 直接发按键；不是 → 先试 yabai（MC 没开时它能成，正好补上按键会打到焦点屏的坑），yabai 报 mission-control is active 就说明 MC 开着，这时再发按键（跟鼠标走，也是对的）。
 
+**⚠️ `space --focus` 报 `cannot focus an already focused space` 不是失败**，是「目标本来就是当前格」（`hs.spaces` 读数滞后所致）。`postSpaceSwitch` 的 `focusByIndex` 必须把这条错误当成功返回 —— 当失败的话调用方会接着发 ⌃←/⌃→，那一下就多切一格（踩过：2026-09-18 16:10 space 10）。
+
 **⭐ 定位「当前 space」按鼠标、不按键盘焦点**：双显示器下人把鼠标移到另一块屏，想操作的就是那一块，但键盘焦点还留在原处。yabai 的 `--space`（不带参数）给的是**焦点**那一格，`--space mouse` 给的才是鼠标那块屏正在显示的那一格；`hs.spaces` 侧对应 `hs.mouse.getCurrentScreen()` + `activeSpaceOnScreen`。`switch_current_space` 和 `swap_space_and_app` **必须用同一套定位**，否则会出现「在 A 屏搬窗口、切的却是 B 屏」。
 
 **⭐ 切完 space 要轮询复查，别用固定延时**：`hs.spaces` 反映出新 space 要**约 1.0s**（比动画本身慢不少）。之前写死等 0.5s 就判定失败 → 补发 ⌃→ → 一次交换连跳 3 格，跳到屏幕边缘那下按键没人接，就是那声「嘟」。现在用 `hs.timer.waitUntil` 轮询到 `activeSpaceOnScreen(screen) == targetId`，超时才补发，最多 2 次。⚠️ 复查要用**目标那块屏**的 `activeSpaceOnScreen`，不能用 `focusedSpace()`（那是键盘焦点那一格，鼠标在另一块屏时永远判定失败，会把另一块屏一格一格推着走）。
+
+**⭐ 补发前必须用 `stepsToTarget(nb)` 重新算方向**：⌃←/⌃→ 是**相对当前格**的，拿发起时算好的方向盲目重发，在「其实已经切到了 / 已经切过头了」时会把 space 越推越远（踩过：2026-09-18 11:45，⌃← 发两次都没匹配上目标，最后一下打到边缘）。`delta == 0` 就直接判定成功收工。
+
+**⭐ `switch_current_space` 有自己的连按保护，判据是 `spaceSwap.timers.switch` 还挂着**。以前这里是「把上一次的 `waitUntil` 停掉」，那是能把整个功能**永久卡死**的坑：`swap_space_and_app` 把 `spaceSwap.busy` 的释放挂在这个 `waitUntil` 的 `onDone` 上，`wgestures.changeCurrentSpace` 或第二次手势调进来就把它停掉 → `onDone` 永远不来 → `busy` 再也放不掉 → 之后每次交换都被拦（日志刷「上一次 space 交换还没走完，忽略这次调用」，只能 `hs.reload()`）。两条配套约定：① 拦掉这次调用时**也要 `onDone(false)`**，否则换成本次调用方的锁放不掉；② `swap_space_and_app` 另外挂了个 `spaceSwap.timers.busyGuard` 兜底 timer（`BUSY_GUARD_TIMEOUT`）强制放锁，`finish()` 是幂等的。
+
+**⚠️ `pressArrow` 的 4 个按键事件每条链要用独立的 timer 槽位**（`spaceSwap.timers["keys"..n]`）。共用一个槽位时，后一条链会覆盖前一条、把它的 `doAfter` GC 掉 —— 断在「ctrl 已按下、还没抬起」那一步的话，系统会一直认为 ctrl 是按住的，之后所有 ⌃←/⌃→ 都失效，正常打字也乱掉。
 
 **⚠️ yabai 搬不动的窗口**：`has-ax-reference: false` / `can-move: false` 的窗口是真的搬不了（`yabai -m window <id> --space <n>` → `could not locate the window to act on!`），实测都是各 App 的无标题隐形辅助窗口（Hammerspoon、活动监视器、zoom.us 之类）。这类只打日志、不弹 alert。sticky（`is-sticky`）窗口出现在**每一格** space 的 `windows` 数组里，搬它会把它从「所有 space」钉到一格上，必须静默跳过。
 

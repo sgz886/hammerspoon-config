@@ -524,6 +524,12 @@ local KEY_EVENT_GAP = 0.02
 --    实测过：两次交换隔 2 秒，第二次仍然读到旧状态，搬出来的结果是错的。
 local spaceSwap = { busy = false, timers = {} }
 
+-- pressArrow 每条按键链自己的 timer 槽位编号
+-- ⚠️ 不能让两条链共用一个槽位：后一条覆盖前一条时，前一条的 doAfter 会被 GC，链子断在半路。
+--    断在「ctrl 已按下、还没抬起」那一步的话，系统会一直认为 ctrl 是按住的 —— 之后所有 ⌃←/⌃→
+--    都失效，正常打字也乱掉。实测过：连着两次手势就能撞上。
+local keyChainSeq = 0
+
 -- 把「切一格 space」这个动作发出去 —— 只管发，不判断边缘、也不复查结果。
 -- ⚠️ 私有：边缘判断和「切没切成」的复查都在 M.switch_current_space 里，
 --    绕过它直接发就会串到隔壁显示器（"yabai" 模式）或者静默失败。
@@ -566,6 +572,14 @@ local function postSpaceSwitch(direction, method, nb)
 
         local ok, err = yabai.command("space", "--focus", index)
         if not ok then
+            -- ⭐ "cannot focus an already focused space" = 目标其实【已经是当前格】了，
+            --    只是 hs.spaces 的读数还滞后着（见 SPACE_SWITCH_TIMEOUT 那段注释）。
+            --    这是「已经到位」，绝不能当失败 —— 当失败的话调用方会接着 pressArrow()，
+            --    那一下就把 space 多切一格（实测日志：2026-09-18 16:10 space 10）。
+            if tostring(err):find("already focused") then
+                print(string.format("[window_control] space %d 本来就是当前格，不用切", index))
+                return true
+            end
             print(string.format("[window_control] yabai 切到 space %d 没成：%s",
                 index, tostring(err)))
         end
@@ -585,11 +599,18 @@ local function postSpaceSwitch(direction, method, nb)
             function() ev.newKeyEvent(direction, false):post() end,
             function() ev.newKeyEvent(hs.keycodes.map.ctrl, false):post() end,
         }
+        -- ⚠️ 每条链一个独立槽位（见 keyChainSeq 的注释），发完就回收
+        keyChainSeq = keyChainSeq + 1
+        local slot = "keys" .. keyChainSeq
+
         local function send(i)
             steps[i]()
-            if i >= #steps then return end
+            if i >= #steps then
+                spaceSwap.timers[slot] = nil
+                return
+            end
             -- ⚠️ timer 存进 spaceSwap.timers 防 GC
-            spaceSwap.timers.keys = hs.timer.doAfter(KEY_EVENT_GAP, function() send(i + 1) end)
+            spaceSwap.timers[slot] = hs.timer.doAfter(KEY_EVENT_GAP, function() send(i + 1) end)
         end
         send(1)
         return true
@@ -626,6 +647,31 @@ local SPACE_SWITCH_POLL    = 0.05
 -- 切 space 最多发几次按键。轮询到超时才算真的丢了，这时补发一次；再不成就放弃，
 -- 别一直发 —— 系统快捷键被关掉的话，每发一次就嘟一声
 local SPACE_SWITCH_MAX_TRY = 2
+
+-- swap_space_and_app 的 busy 兜底超时（秒）：比「切 space 最坏情况」再多留点余量
+-- ⚠️ 必须 > SPACE_SWITCH_TIMEOUT × SPACE_SWITCH_MAX_TRY，否则会在切 space 还在正常复查时就误放锁
+local BUSY_GUARD_TIMEOUT = SPACE_SWITCH_TIMEOUT * SPACE_SWITCH_MAX_TRY + 3
+
+-- 目标那块屏【现在显示的那一格】距离 targetId 还差几格
+-- ⭐ 补发按键之前必须重新算一次：⌃← / ⌃→ 是【相对当前格】的，拿发起时算好的方向盲目补发，
+--    在「其实已经切到了 / 已经切过头了」的情况下会把 space 越推越远，推到边缘那下还会嘟一声
+--    （实测日志：2026-09-18 11:45，⌃← 发了两次都没匹配上目标）。
+-- @param nb table  neighborSpaceUnderMouse 的结果
+-- @return number?  0 = 已经到位；>0 = 还要往右几格；<0 = 还要往左几格；nil = 算不出来
+local function stepsToTarget(nb)
+    local ids = hs.spaces.spacesForScreen(nb.screen)
+    if type(ids) ~= "table" then return nil end
+
+    local activeId = hs.spaces.activeSpaceOnScreen(nb.screen)
+    local from, to
+    for i, id in ipairs(ids) do
+        if id == activeId    then from = i end
+        if id == nb.targetId then to   = i end
+    end
+    -- 目标格没了（space 被销毁 / 显示器插拔），或者当前格不在这块屏的列表里
+    if not from or not to then return nil end
+    return to - from
+end
 
 
 local M = {}
@@ -879,10 +925,17 @@ function M.switch_current_space(direction, method, onDone)
         return true
     end
 
-    -- 上一次的复查还挂着就先停掉，免得两个 waitUntil 打架（也顺手避免 timer 泄漏）
+    -- ⭐ 连按保护：上一次切 space 的复查还挂着就直接忽略这次。
+    -- ⚠️ 以前这里是「把上一次的 waitUntil 停掉」，那是个能把整个功能卡死的坑：
+    --    swap_space_and_app 把 spaceSwap.busy 的释放挂在这个 waitUntil 的 onDone 上，
+    --    这时候只要有人（wgestures.changeCurrentSpace / 再来一次手势）调进来，
+    --    上一次的 timer 被停掉 → onDone 永远不来 → busy 永远放不掉 →
+    --    之后所有 swap 都被拦死，只能 hs.reload()（实测日志：2026-09-18 21:57 连着三次「还没走完」）。
+    -- ⚠️ 忽略的时候必须把 onDone(false) 叫一声，否则换成【本次】调用方的锁放不掉。
     if spaceSwap.timers.switch then
-        spaceSwap.timers.switch:stop()
-        spaceSwap.timers.switch = nil
+        print("[window_control] 上一次切 space 还没走完，忽略这次调用")
+        if onDone then onDone(false) end
+        return true
     end
 
     -- ⭐ 复查的是「目标那块屏现在显示的是不是 target」，用 hs.spaces.activeSpaceOnScreen(screen)：
@@ -893,8 +946,30 @@ function M.switch_current_space(direction, method, onDone)
     -- ⚠️ timer 必须存进 spaceSwap.timers，不然会被 GC（见文件里其他同类注释）
     -- ⚠️ 轮询回调里只许放 hs.spaces 这种 ~0ms 的调用，别放 yabai.query（一次 40ms，
     --    50ms 一跳的话主线程基本被占满，hs.ipc 会一直拒请求）
+    -- 收尾：先把 timer 槽位腾出来【再】叫 onDone —— onDone 里可能又要发起一次切 space
+    -- （swap_space_and_app 的 refocusAndFinish 就是），槽位还占着的话会被上面的连按保护拦掉
+    local function settle(landed)
+        spaceSwap.timers.switch = nil
+        if onDone then onDone(landed) end
+    end
+
     local function attempt(nth)
-        postSpaceSwitch(direction, method, nb)
+        -- ⭐ 每次（包括补发）都按【当前】位置重新算方向和距离，别用发起时那个方向盲目重发。
+        --    delta == 0 说明已经到位了（常见于 hs.spaces 读数滞后 / 上一次其实成功了）。
+        local delta = stepsToTarget(nb)
+        if delta == 0 then
+            settle(true)
+            return
+        end
+        -- 算不出来（space 被销毁 / 显示器插拔）就沿用发起时的方向，至少还是原来的行为
+        local dir = direction
+        if delta then dir = delta > 0 and "right" or "left" end
+        if dir ~= direction then
+            print(string.format("[window_control] 当前格比预期偏了 %d 格，这次改发 %s",
+                delta, dir))
+        end
+
+        postSpaceSwitch(dir, method, nb)
 
         local deadline = hs.timer.secondsSinceEpoch() + SPACE_SWITCH_TIMEOUT
         local function arrived()
@@ -904,10 +979,10 @@ function M.switch_current_space(direction, method, onDone)
         spaceSwap.timers.switch = hs.timer.waitUntil(
             function() return arrived() or hs.timer.secondsSinceEpoch() > deadline end,
             function()
-                if spaceSwap.timers.switch then spaceSwap.timers.switch:stop() end
-
+                -- waitUntil 在调 actionFn 之前已经自己 stop 了（见 hs/timer.lua 的实现），
+                -- 这里不用再停；槽位由 settle / 下一次 attempt 接手
                 if arrived() then
-                    if onDone then onDone(true) end
+                    settle(true)
                     return
                 end
 
@@ -917,7 +992,7 @@ function M.switch_current_space(direction, method, onDone)
                         .. "（系统设置 → 键盘 → 键盘快捷键 → 调度中心里"
                         .. "「移到左边/右边一个空间」是不是被关掉了？）",
                         nth, nb.screen:name() or "?", nb.pos + step))
-                    if onDone then onDone(false) end
+                    settle(false)
                     return
                 end
 
@@ -1015,12 +1090,36 @@ function M.swap_space_and_app(direction)
         current.index, target.index, current.display, direction, failed))
 
     -- 收尾：真正搬失败的（不是上面那些「无视」的）如实报一声，并放掉连按保护
+    -- ⚠️ 必须幂等：兜底 timer 和正常回调都可能走到这里
+    local finished = false
     local function finish()
+        if finished then return end
+        finished = true
+
+        if spaceSwap.timers.busyGuard then
+            spaceSwap.timers.busyGuard:stop()
+            spaceSwap.timers.busyGuard = nil
+        end
         spaceSwap.busy = false
+
         if failed > 0 then
             hs.alert.show(string.format("⚠️ 有 %d 个窗口没搬动，详见控制台", failed))
         end
     end
+
+    -- ⚠️ 兜底：busy 的释放挂在 switch_current_space 的异步回调上，那个回调只要因为任何原因没来
+    --    （timer 被别人停掉、回调里抛错、显示器插拔让复查一直算不出来……），
+    --    busy 就永远放不掉，之后每一次交换都被连按保护拦死，只能 hs.reload()。
+    --    实测踩过（2026-09-18 21:57 连着三次「还没走完」），所以这里必须有个救命 timer。
+    -- ⚠️ timer 存进 spaceSwap.timers 防 GC
+    spaceSwap.timers.busyGuard = hs.timer.doAfter(BUSY_GUARD_TIMEOUT, function()
+        if spaceSwap.busy and not finished then
+            print(string.format(
+                "[window_control] ⚠️ %.1fs 内没收到切 space 的收尾回调，强制放掉连按保护",
+                BUSY_GUARD_TIMEOUT))
+            finish()
+        end
+    end)
 
     -- 切完 space、动画走完之后要做的收尾：抢回焦点 + 放锁
     local function refocusAndFinish()
