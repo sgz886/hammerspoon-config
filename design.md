@@ -156,6 +156,8 @@ yabai -m query --spaces | jq -r '.[] | "disp\(.display) index\(.index) id=\(.id)
 
 于是 `switch_current_space` 里：目标屏就是焦点屏 → 直接发按键；不是 → 先试 yabai（MC 没开时它能成，正好补上按键会打到焦点屏的坑），yabai 报 mission-control is active 就说明 MC 开着，这时再发按键（跟鼠标走，也是对的）。
 
+**⭐ 但【补发】（`postSpaceSwitch` 的 `nth >= 2`）一律先试 yabai，不看焦点在哪块屏**：上面那个判据读的是 `hs.spaces.focusedSpace()`，而它的读数滞后约 1.0s；`swap_space_and_app` 刚把聚焦窗口从可见 space 搬走，正是这个读数最不准的时刻 —— 会误判成「焦点就在本屏」、盲发 ⌃←，按键跟着真实焦点打到**另一块屏**上，目标屏的 `activeSpaceOnScreen` 永远不变，两次 attempt 全部失败（踩过：2026-09-19 21:37，space 9 ⇄ 8 发了 2 次都没切到）。首发保持原样（常态一次就成、零额外子进程），只在「第一次已经确认没成」这个分支换成认绝对 index 的确定性路径。`swap_space_and_app` 顺手把自己算好的 `target.id` / `target.index` 传进去，省掉 `yabaiIndexForSpace` 那次 ~40ms 查询（⚠️ 要核对 id 一致才敢用，两次定位之间鼠标可能已经移到另一块屏了）。
+
 **⚠️ `space --focus` 报 `cannot focus an already focused space` 不是失败**，是「目标本来就是当前格」（`hs.spaces` 读数滞后所致）。`postSpaceSwitch` 的 `focusByIndex` 必须把这条错误当成功返回 —— 当失败的话调用方会接着发 ⌃←/⌃→，那一下就多切一格（踩过：2026-09-18 16:10 space 10）。
 
 **⭐ 定位「当前 space」按鼠标、不按键盘焦点**：双显示器下人把鼠标移到另一块屏，想操作的就是那一块，但键盘焦点还留在原处。yabai 的 `--space`（不带参数）给的是**焦点**那一格，`--space mouse` 给的才是鼠标那块屏正在显示的那一格；`hs.spaces` 侧对应 `hs.mouse.getCurrentScreen()` + `activeSpaceOnScreen`。`switch_current_space` 和 `swap_space_and_app` **必须用同一套定位**，否则会出现「在 A 屏搬窗口、切的却是 B 屏」。
@@ -164,7 +166,28 @@ yabai -m query --spaces | jq -r '.[] | "disp\(.display) index\(.index) id=\(.id)
 
 **⭐ 补发前必须用 `stepsToTarget(nb)` 重新算方向**：⌃←/⌃→ 是**相对当前格**的，拿发起时算好的方向盲目重发，在「其实已经切到了 / 已经切过头了」时会把 space 越推越远（踩过：2026-09-18 11:45，⌃← 发两次都没匹配上目标，最后一下打到边缘）。`delta == 0` 就直接判定成功收工。
 
-**⭐ `switch_current_space` 有自己的连按保护，判据是 `spaceSwap.timers.switch` 还挂着**。以前这里是「把上一次的 `waitUntil` 停掉」，那是能把整个功能**永久卡死**的坑：`swap_space_and_app` 把 `spaceSwap.busy` 的释放挂在这个 `waitUntil` 的 `onDone` 上，`wgestures.changeCurrentSpace` 或第二次手势调进来就把它停掉 → `onDone` 永远不来 → `busy` 再也放不掉 → 之后每次交换都被拦（日志刷「上一次 space 交换还没走完，忽略这次调用」，只能 `hs.reload()`）。两条配套约定：① 拦掉这次调用时**也要 `onDone(false)`**，否则换成本次调用方的锁放不掉；② `swap_space_and_app` 另外挂了个 `spaceSwap.timers.busyGuard` 兜底 timer（`BUSY_GUARD_TIMEOUT`）强制放锁，`finish()` 是幂等的。
+**⭐⭐ 合成 ⌃← / ⌃→ 天生是概率性的 —— 方向键事件必须自己 `setFlags({ctrl=true, fn=true})`**（2026-09-19 复现 + 修掉）。
+
+两参形式的 `ev.newKeyEvent(key, isDown)` **不给事件写 flags**（`hs/eventtap.lua:75-85`：两参时 `mods` 被移成 `nil`，C 侧收不到 flags 表），事件拿到的是**当时的环境修饰键状态**。而「移到左边/右边一个空间」（`symbolichotkeys` 79/81）注册的掩码是 **`0x840000` = ctrl `0x040000` | fn `0x800000`**，多一位少一位都匹配不上。手势是用鼠标做的，手上顺带按着 ⌘/⇧/⌥ 再正常不过 —— 那一下就静默打空，**没有任何报错**。
+
+实测对照（内置屏 space id 8 → 1567）：
+
+| 环境修饰键 | 旧写法（不 setFlags） | `setFlags({ctrl=true, fn=true})` |
+|---|---|---|
+| 无 | ✅ 8 → 1567 | ✅ 8 → 1567 |
+| 按住 ⇧ | ❌ 8 → 8（静默没反应） | ✅ 8 → 1567 |
+
+按住 ⇧ 时 `newKeyEvent("right", true):rawFlags()` = `0x20A20002`（带 shift），加 ctrl 后变成 ⌃⇧→，系统没注册这个组合。
+
+⚠️ `fn` 不能省：`setFlags({ctrl=true})` → `0x040000`，少了 fn 就匹配不上。
+⚠️ 也别改成 `ev.newKeyEvent({"ctrl"}, direction, true)`：那是「合并事件」捷径，实测同样只给 `0x040000`（少 fn），而且带 mods 表会**强制释放**我们刚 post 的 ctrl（官方 Notes，`hs/eventtap.lua:257`）—— 本仓库的 `pasteClipboardToChatbox` / `copyToChatbox` / `modules/kiro-cli_…` 都在用 `keyStroke({"cmd"}, …)`，都挂在 timer 上，随时可能落进那 60ms 窗口，把 ctrl 抢掉。
+⚠️ 顺带：`ev.newKeyEvent(hs.keycodes.map.ctrl, true)` 生成的确实是 `flagsChanged`（实测 `getType()` = 12），这条没问题。
+
+**⚠️⚠️ `hs.timer.waitUntil` 的谓词抛错 = 整个等待静默死掉**。`waitUntil`（`hs/timer.lua:103-129`）用的是 `hs.timer.new(interval, fn)`，**没传 `continueOnError`，默认 `false`** —— 谓词一抛错，timer 当场 stop、`actionFn` **永远不会被调用**，错误只在 console 打一行。所以凡是拿 `waitUntil` 管着一把锁，谓词必须 `pcall`，而且**另外配一个兜底 timer**（`switchGuard` / `busyGuard`），否则锁就是个没有出口的死锁。
+
+**⚠️⚠️ `hs.spaces.activeSpaceOnScreen` / `spacesForScreen` 一律传 36 位 UUID 字符串，别传 `hs.screen` 对象**。传对象时它会先自己 `screen:getUUID()`，而屏幕休眠 / 刚拔掉的那一小段时间 `getUUID()` 返回 `nil`（`hs/spaces.lua:495` 的注释就是为这件事加的守卫），接着 `#screenID` 直接 **`error()`**（`spaces.lua:357-359`）—— 不是返回 nil。这个 error 顺着上面那条 `waitUntil` 的坑，就是 **「偶尔切不过去，而且之后必须 `hs.reload()`」** 的根因：`spaceSwap.timers.switch` 永久占着 → 之后每次切 space 都被连按保护拦、每次交换都变成「窗口照搬、space 不切」，而且带着 `onDone(false)`，连告警都没有。现在 `nb.screenUUID` + `pcall` + `SWITCH_LOCK_TTL` 三道一起解决。
+
+**⭐ `switch_current_space` 有自己的连按保护，判据是 `spaceSwap.timers.switch` 还挂着**（现在还要没超过 `SWITCH_LOCK_TTL`；超了就把旧锁抢掉）。以前这里是「把上一次的 `waitUntil` 停掉」，那是能把整个功能**永久卡死**的坑：`swap_space_and_app` 把 `spaceSwap.busy` 的释放挂在这个 `waitUntil` 的 `onDone` 上，`wgestures.changeCurrentSpace` 或第二次手势调进来就把它停掉 → `onDone` 永远不来 → `busy` 再也放不掉 → 之后每次交换都被拦（日志刷「上一次 space 交换还没走完，忽略这次调用」，只能 `hs.reload()`）。两条配套约定：① 拦掉这次调用时**也要 `onDone(false)`**，否则换成本次调用方的锁放不掉；② `swap_space_and_app` 另外挂了个 `spaceSwap.timers.busyGuard` 兜底 timer（`BUSY_GUARD_TIMEOUT`）强制放锁，`finish()` 是幂等的。
 
 **⚠️ `pressArrow` 的 4 个按键事件每条链要用独立的 timer 槽位**（`spaceSwap.timers["keys"..n]`）。共用一个槽位时，后一条链会覆盖前一条、把它的 `doAfter` GC 掉 —— 断在「ctrl 已按下、还没抬起」那一步的话，系统会一直认为 ctrl 是按住的，之后所有 ⌃←/⌃→ 都失效，正常打字也乱掉。
 

@@ -39,9 +39,21 @@ local BUILTIN_SCREEN_PATTERNS = { "Built%-in", "内置" }
 local READY_TIMEOUT = 5
 local READY_POLL    = 0.05
 
+-- ⭐ 切 space 的详细诊断日志。默认【开着】，因为「切不过去」是偶发的，光靠常规日志
+--    分不出是哪一层断的（事件没发出去 / 发了但没带 ctrl / 系统没响应 / CGS 读数不更新）。
+-- ⚠️ 确认不再复现之后改回 false —— 每次切 space 会多打 4~6 行。
+-- ⚠️ 这些日志只许用 hs.spaces（~0~3ms）和纯 Lua 值，【不要】为了打日志加 yabai.query
+--    （一次 40ms，放进轮询回调会把主线程压满，见 design.md 性能那段）。
+local VERBOSE = true
+
 -- ──────────── 通用内部工具 ────────────
 -- 通用工具函数集合
 
+-- VERBOSE 开着才打的诊断日志
+local function vlog(fmt, ...)
+    if not VERBOSE then return end
+    print("[window_control][dbg] " .. string.format(fmt, ...))
+end
 
 -- 失败的统一出口：控制台留日志，屏幕上给一眼能看懂的提示
 local function fail(reason)
@@ -460,19 +472,27 @@ end
 -- ⭐ hs.spaces.spacesForScreen 给的顺序就是 Mission Control 顺序，也就是 yabai 的 index 顺序
 --    （实测 display 1 逐项对上：{3,4,7,6,1104,5,8} ↔ index 1..7），所以「邻居」就是数组里
 --    前一个 / 后一个；只在本屏的数组里取，天然不会串到隔壁显示器。
+-- ⚠️ 结果里必须带上 screenUUID，之后所有 hs.spaces 复查都只认它、不再传 hs.screen 对象 ——
+--    见 stepsToTarget 上面那段注释（传对象会在屏幕断开的瞬间 error）。
 -- @param step number  -1 / +1，来自 DIRECTIONS
--- @return table?   { screen, ids, pos, currentId, targetId }；targetId 为 nil = 到边缘了
+-- @return table?   { screen, screenUUID, count, pos, currentId, targetId }；targetId 为 nil = 到边缘了
 -- @return string?  错误信息
 local function neighborSpaceUnderMouse(step)
     local screen = hs.mouse.getCurrentScreen()
     if not screen then return nil, "拿不到鼠标所在的屏幕" end
 
-    local ids = hs.spaces.spacesForScreen(screen)
+    -- ⚠️ 拿不到 UUID 就当定位失败，别让 nil 漏进 hs.spaces（那边会 error 而不是返回 nil）
+    local screenUUID = screen:getUUID()
+    if type(screenUUID) ~= "string" or #screenUUID ~= 36 then
+        return nil, string.format("拿不到屏幕 '%s' 的 UUID（刚插拔过？）", screen:name() or "?")
+    end
+
+    local ids = hs.spaces.spacesForScreen(screenUUID)
     if type(ids) ~= "table" or #ids == 0 then
         return nil, string.format("拿不到屏幕 '%s' 上的 space 列表", screen:name() or "?")
     end
 
-    local currentId = hs.spaces.activeSpaceOnScreen(screen)
+    local currentId = hs.spaces.activeSpaceOnScreen(screenUUID)
     if not currentId then
         return nil, string.format("拿不到屏幕 '%s' 正在显示的 space", screen:name() or "?")
     end
@@ -487,11 +507,16 @@ local function neighborSpaceUnderMouse(step)
     end
 
     return {
-        screen    = screen,
-        count     = #ids,
-        pos       = pos,
-        currentId = currentId,
-        targetId  = ids[pos + step],   -- 越界 = 到边缘，nil
+        screen     = screen,
+        screenUUID = screenUUID,
+        -- 名字现在就取好：用它的地方都在几秒后的 timer 回调里，那时屏幕可能已经拔掉了
+        screenName = screen:name() or "?",
+        count      = #ids,
+        pos        = pos,
+        currentId  = currentId,
+        targetId   = ids[pos + step],   -- 越界 = 到边缘，nil
+        -- targetYabaiIndex：调用方已经知道目标的 yabai index 时会填上，省掉 focusByIndex 里
+        -- 那次 ~40ms 的 yabai.query（swap_space_and_app 就是这种情况）
     }
 end
 
@@ -522,7 +547,9 @@ local KEY_EVENT_GAP = 0.02
 --    的同类注释、commit aaeccf0）；② busy 拦住按住快捷键连发 —— 切 space 的系统动画没走完时，
 --    yabai 读到的「聚焦 space」和窗口归属都还是旧的，这时候再来一次就会拿着过期状态乱搬。
 --    实测过：两次交换隔 2 秒，第二次仍然读到旧状态，搬出来的结果是错的。
-local spaceSwap = { busy = false, timers = {} }
+-- ⚠️ switchStartedAt 是 timers.switch 这把锁的时间戳，连按保护靠它判断「锁是不是已经过期」
+--    （见 SWITCH_LOCK_TTL）。nil = 现在没人握锁。
+local spaceSwap = { busy = false, timers = {}, switchStartedAt = nil }
 
 -- pressArrow 每条按键链自己的 timer 槽位编号
 -- ⚠️ 不能让两条链共用一个槽位：后一条覆盖前一条时，前一条的 doAfter 会被 GC，链子断在半路。
@@ -536,6 +563,7 @@ local keyChainSeq = 0
 -- @param direction string  "left" 或 "right"（"shortcut" 模式下正好就是方向键的键名）
 -- @param method string    "shortcut" 或 "yabai"（调用方已经校验过）
 -- @param nb table         neighborSpaceUnderMouse 的结果（要 currentId / targetId / screen）
+-- @param nth number       第几次发（1 = 首发，>=2 = 补发）。见下面「补发换 yabai」那段
 --
 -- ⭐⭐ 两种方式「作用在哪块屏」的规则完全不同，都是实测出来的，这也是这个函数唯一的复杂点：
 --   · yabai `space --focus <index>` —— 认的是【明确的 space index】，跟哪块屏有焦点无关，
@@ -558,12 +586,26 @@ local keyChainSeq = 0
 --     · 是焦点屏 → 直接发按键，MC 开着关着都对
 --     · 不是焦点屏 → 先试 yabai（MC 没开时它能成，正好补上「按键会打到焦点屏」这个坑）；
 --       它报 mission-control is active 就说明 MC 开着，这时再发按键 —— 按键跟鼠标走，也是对的
+--
+-- ⭐ 补发（nth >= 2）一律【先试 yabai】，不管焦点在哪块屏：
+--    「焦点在不在本屏」这个判据读的是 hs.spaces.focusedSpace()，而它的读数滞后约 1.0s；
+--    swap_space_and_app 刚把聚焦窗口从可见 space 搬走，正是这个读数最不准的时刻 ——
+--    于是会误判成「焦点就在本屏」、盲发 ⌃←，按键跟着真实焦点打到【另一块屏】上，
+--    目标屏的 activeSpaceOnScreen 永远不变，两次 attempt 全部失败（实测日志：
+--    2026-09-19 21:37 space 9 ⇄ 8，发了 2 次都没切到）。首发保持原样（常态一次就成、零额外子进程），
+--    只在「第一次已经确认没成」这个分支上换成认绝对 index 的确定性路径。
 -- @return boolean  命令有没有发出去（≠ space 真的切了，切没切由调用方复查）
-local function postSpaceSwitch(direction, method, nb)
+local function postSpaceSwitch(direction, method, nb, nth)
+    nth = nth or 1
+
     -- ⚠️ 只有这条分支才需要 yabai 的 index，所以 id → index 的换算放在这里【按需】做，
-    --    别提到外面去 —— 那是一个 ~40ms 的子进程，走按键那条路根本用不上
+    --    别提到外面去 —— 那是一个 ~40ms 的子进程，走按键那条路根本用不上。
+    --    调用方已经知道 index 时（swap_space_and_app）会填 nb.targetYabaiIndex，直接用，连查都省了。
     local function focusByIndex()
-        local index, idxErr = yabaiIndexForSpace(nb.targetId)
+        local index, idxErr = nb.targetYabaiIndex, nil
+        if not index then
+            index, idxErr = yabaiIndexForSpace(nb.targetId)
+        end
         if not index then
             print(string.format("[window_control] 换不出 space %s 的 yabai index：%s",
                 tostring(nb.targetId), tostring(idxErr)))
@@ -591,22 +633,85 @@ local function postSpaceSwitch(direction, method, nb)
     --    hs.ipc 收到的请求会被直接拒掉（控制台刷
     --    "hs.ipc: Instance of [...] already recursing, refusing request."），
     --    hotkey / eventtap / 其他 timer 也一起停摆。doAfter 串发是等效的，而且不占主线程。
+    --
+    -- ⚠️⚠️⚠️ 这是「偶尔切不过去」的根因之一，已复现，别改回去。
+    --
+    --    两参形式的 ev.newKeyEvent(key, isDown) 【不给事件写 flags】（见 hs/eventtap.lua:75-85：
+    --    两参时 mods 被移成 nil，C 侧收不到 flags 表），事件拿到的是【当时的环境修饰键状态】。
+    --    而系统设置里「移到左边/右边一个空间」（symbolichotkeys 79/81）注册的掩码是
+    --    0x840000 = ctrl 0x040000 | fn 0x800000，多一位少一位都匹配不上。
+    --    于是手上（或别的合成事件）只要多按着任何一个修饰键，这一串就静默打空。
+    --
+    --    实测对照（2026-09-19，hs 1.1.1，内置屏 space id 8 → 1567）：
+    --      | 环境修饰键 | 旧写法（不 setFlags） | setFlags{ctrl,fn} |
+    --      | 无         | ✅ 8 → 1567           | ✅ 8 → 1567       |
+    --      | 按住 ⇧     | ❌ 8 → 8（静默没反应）| ✅ 8 → 1567       |
+    --    按住 ⇧ 时 newKeyEvent("right", true):rawFlags() = 0x20A20002（带 shift），
+    --    加上 ctrl 之后是 ⌃⇧→ —— 系统没注册这个组合，所以什么都不发生、也没有任何错误。
+    --    手势是用鼠标做的，手上顺带按着 ⌘/⇧/⌥ 再正常不过，这就是「偶尔」的来源。
+    --
+    --    第二条路径：别处带 mods 表的 hs.eventtap.keyStroke 会【强制释放】我们 post 的 ctrl
+    --    （官方 Notes，hs/eventtap.lua:257；本文件 pasteClipboardToChatbox / copyToChatbox
+    --    和 modules/kiro-cli_… 都在用，都挂在 timer 上，随时可能落进这 60ms 窗口）。
+    --
+    --    两层加固：
+    --      ① 发链之前把悬空的 ctrl 抬一下（链首插一步，见下面）
+    --      ② 方向键事件用 :setFlags 把掩码钉成【正好 ctrl + fn】—— 既补上 ctrl，也把环境里
+    --         多余的修饰键甩掉
+    -- ⚠️⚠️ setFlags 里的 fn 不能省！实测 setFlags({ctrl=true}) → 0x040000，比注册掩码少了 fn，
+    --    匹配不上。setFlags({ctrl=true, fn=true}) → 0x840000，和注册掩码完全一致。
+    -- ⚠️ 也别改成 ev.newKeyEvent({"ctrl"}, direction, true)：那是「合并事件」捷径，实测同样只给
+    --    0x040000（少 fn），而且带 mods 表会把我们刚 post 的 ctrl 强制释放。
     local function pressArrow()
         local ev = hs.eventtap.event
+
+        -- ⌃← / ⌃→ 要的掩码：ctrl + fn（方向键天生带 fn），多一位少一位都匹配不上
+        local ARROW_FLAGS = { ctrl = true, fn = true }
         local steps = {
             function() ev.newKeyEvent(hs.keycodes.map.ctrl, true):post() end,
-            function() ev.newKeyEvent(direction, true):post() end,
-            function() ev.newKeyEvent(direction, false):post() end,
+            -- ② 把掩码钉死成 ctrl+fn，不靠继承、也不受环境修饰键干扰
+            function() ev.newKeyEvent(direction, true):setFlags(ARROW_FLAGS):post() end,
+            function() ev.newKeyEvent(direction, false):setFlags(ARROW_FLAGS):post() end,
             function() ev.newKeyEvent(hs.keycodes.map.ctrl, false):post() end,
         }
+
+        -- ① 悬空 ctrl 自愈：ctrl 看起来已经按着 → 在链子最前面插一步把它抬起来。
+        -- ⚠️ 必须作为独立的一步插进链子里（而不是在这儿直接 post）—— 抬起和紧接着的按下之间
+        --    要留 KEY_EVENT_GAP，贴在一起发等于没发（flagsChanged 会被合掉）。
+        local mods = hs.eventtap.checkKeyboardModifiers()
+        vlog("发链前修饰键状态=%s", hs.inspect(mods or {}, { newline = "", indent = "" }))
+        if mods and mods.ctrl then
+            vlog("ctrl 还是按下状态（上一条链断在半路？/ 手上按着？），链首先补一个 ctrl keyup")
+            table.insert(steps, 1, function() ev.newKeyEvent(hs.keycodes.map.ctrl, false):post() end)
+        end
         -- ⚠️ 每条链一个独立槽位（见 keyChainSeq 的注释），发完就回收
         keyChainSeq = keyChainSeq + 1
         local slot = "keys" .. keyChainSeq
 
         local function send(i)
-            steps[i]()
+            -- ⚠️ 单步抛错也必须把 ctrl 抬起来，否则链子断在「ctrl 已按下」那一步，
+            --    之后所有 ⌃←/⌃→ 都失效、正常打字也乱掉
+            local ok, err = pcall(steps[i])
+            if not ok then
+                print(string.format("[window_control] ⚠️ 按键链第 %d 步失败：%s，强制抬起 ctrl",
+                    i, tostring(err)))
+                pcall(function() ev.newKeyEvent(hs.keycodes.map.ctrl, false):post() end)
+                spaceSwap.timers[slot] = nil
+                return
+            end
             if i >= #steps then
                 spaceSwap.timers[slot] = nil
+                -- ⚠️ 别在这儿【当场】读修饰键：刚 post 的 ctrl keyup 这一 tick 还没被 CG 处理完，
+                --    读出来一定还是 "ctrl 按着"，看日志的人会以为 ctrl 漏了（实测就被这条误导过）。
+                --    隔一拍再读才是真实状态（实测 +0.08s 已经是 ctrl=false）。
+                if VERBOSE then
+                    spaceSwap.timers[slot .. "chk"] = hs.timer.doAfter(0.08, function()
+                        spaceSwap.timers[slot .. "chk"] = nil
+                        vlog("按键链发完 80ms 后的修饰键状态=%s",
+                            hs.inspect(hs.eventtap.checkKeyboardModifiers(),
+                                { newline = "", indent = "" }))
+                    end)
+                end
                 return
             end
             -- ⚠️ timer 存进 spaceSwap.timers 防 GC
@@ -616,19 +721,39 @@ local function postSpaceSwitch(direction, method, nb)
         return true
     end
 
-    if method == "yabai" then return focusByIndex() end
+    if method == "yabai" then
+        vlog("nth=%d method=yabai → focusByIndex", nth)
+        return focusByIndex()
+    end
 
     -- 键盘焦点是不是就在目标那块屏上？
     -- ⭐ currentId 就是那块屏正在显示的那一格，所以「焦点那一格 == currentId」⇔「焦点就在这块屏」。
     --    用 hs.spaces.focusedSpace() 判断而不是查 yabai —— 它读 CGS，实测 ~0ms，不阻塞主线程。
-    if hs.spaces.focusedSpace() ~= nb.currentId then
+    local focused = hs.spaces.focusedSpace()
+    local activeOk, activeId = pcall(hs.spaces.activeSpaceOnScreen, nb.screenUUID)
+    vlog("nth=%d 屏幕='%s' focusedSpace=%s currentId=%s targetId=%s activeOnScreen=%s",
+        nth, nb.screenName, tostring(focused), tostring(nb.currentId),
+        tostring(nb.targetId), activeOk and tostring(activeId) or "取不到")
+
+    -- ⭐ 补发一律先试 yabai（认绝对 index，永远打在对的那块屏上）
+    if nth >= 2 then
+        print(string.format(
+            "[window_control] 第 %d 次改先试 yabai —— 按键那条路认的是键盘焦点那块屏，"
+            .. "而 focusedSpace() 的读数滞后约 1.0s，首发没成很可能就是打错屏了", nth))
+        if focusByIndex() then return true end
+        print("[window_control] yabai 没成（Mission Control 开着？），改发按键 —— MC 下按键跟鼠标走")
+        return pressArrow()
+    end
+
+    if focused ~= nb.currentId then
         print(string.format(
             "[window_control] 目标在屏幕 '%s'，但键盘焦点不在这块屏 —— ⌃%s 会打到焦点那块屏，先试 yabai",
-            nb.screen:name() or "?", direction == "right" and "→" or "←"))
+            nb.screenName, direction == "right" and "→" or "←"))
         if focusByIndex() then return true end
         print("[window_control] yabai 没成（Mission Control 开着？），改发按键 —— MC 下按键跟鼠标走")
     end
 
+    vlog("nth=%d → pressArrow(%s)", nth, direction)
     return pressArrow()
 end
 
@@ -648,21 +773,38 @@ local SPACE_SWITCH_POLL    = 0.05
 -- 别一直发 —— 系统快捷键被关掉的话，每发一次就嘟一声
 local SPACE_SWITCH_MAX_TRY = 2
 
+-- switch_current_space 那把锁（spaceSwap.timers.switch）的有效期（秒）
+-- ⚠️ 这是和 busyGuard 对称的救命阀：轮询的谓词一旦抛错，waitUntil 会静默 stop 且不调 actionFn
+--    （见 stepsToTarget 上面那段），settle() 不跑、锁永久占着，之后所有切 space / 交换都被拦死，
+--    只能 hs.reload()。所以锁必须会过期，而且另外配一个 switchGuard 兜底 timer。
+-- ⚠️ 必须 > 一次完整复查的最坏耗时（SPACE_SWITCH_TIMEOUT × SPACE_SWITCH_MAX_TRY），
+--    否则会在还在正常复查时就把锁抢掉
+local SWITCH_LOCK_TTL = SPACE_SWITCH_TIMEOUT * SPACE_SWITCH_MAX_TRY + 1
+
 -- swap_space_and_app 的 busy 兜底超时（秒）：比「切 space 最坏情况」再多留点余量
--- ⚠️ 必须 > SPACE_SWITCH_TIMEOUT × SPACE_SWITCH_MAX_TRY，否则会在切 space 还在正常复查时就误放锁
-local BUSY_GUARD_TIMEOUT = SPACE_SWITCH_TIMEOUT * SPACE_SWITCH_MAX_TRY + 3
+-- ⚠️ 必须 > SWITCH_LOCK_TTL，否则会在切 space 还在正常复查 / 刚被 switchGuard 收尾时就误放锁
+local BUSY_GUARD_TIMEOUT = SWITCH_LOCK_TTL + 2
 
 -- 目标那块屏【现在显示的那一格】距离 targetId 还差几格
 -- ⭐ 补发按键之前必须重新算一次：⌃← / ⌃→ 是【相对当前格】的，拿发起时算好的方向盲目补发，
 --    在「其实已经切到了 / 已经切过头了」的情况下会把 space 越推越远，推到边缘那下还会嘟一声
 --    （实测日志：2026-09-18 11:45，⌃← 发了两次都没匹配上目标）。
+-- ⚠️⚠️ 这里（以及 arrived()）传给 hs.spaces 的必须是 nb.screenUUID 这个 36 位字符串，
+--    【不能】传 hs.screen 对象：hs.spaces 收到对象时会先自己调 screen:getUUID()，而屏幕
+--    休眠 / 刚拔掉的那一小段时间 getUUID() 返回 nil，接着 `#screenID` 直接 error()
+--    （见 /Applications/Hammerspoon.app/.../extensions/hs/spaces.lua:357-359 与 :495 的注释）。
+--    这个 error 会顺着 hs.timer.waitUntil 的谓词抛出去 —— waitUntil 没传 continueOnError，
+--    默认 false，于是 timer 当场 stop、actionFn 永远不执行、settle() 不跑、
+--    spaceSwap.timers.switch 永久占着 → 之后每次切 space / 交换都被连按保护拦死，只能 reload。
+--    这就是「偶尔切不过去，而且必须 reload 才恢复」的根因，别改回去。
 -- @param nb table  neighborSpaceUnderMouse 的结果
 -- @return number?  0 = 已经到位；>0 = 还要往右几格；<0 = 还要往左几格；nil = 算不出来
 local function stepsToTarget(nb)
-    local ids = hs.spaces.spacesForScreen(nb.screen)
-    if type(ids) ~= "table" then return nil end
+    local idsOk, ids = pcall(hs.spaces.spacesForScreen, nb.screenUUID)
+    if not idsOk or type(ids) ~= "table" then return nil end
 
-    local activeId = hs.spaces.activeSpaceOnScreen(nb.screen)
+    local activeOk, activeId = pcall(hs.spaces.activeSpaceOnScreen, nb.screenUUID)
+    if not activeOk then return nil end
     local from, to
     for i, id in ipairs(ids) do
         if id == activeId    then from = i end
@@ -897,9 +1039,15 @@ end
 -- @param method string?      "shortcut"（默认 SPACE_SWITCH_METHOD）或 "yabai"，见 postSpaceSwitch
 -- @param onDone function?    收尾回调，签名 onDone(landed:boolean)：
 --                            landed = true 真的切过去了；false = 到边缘没切 / 发了几次都没切成
+-- @param knownTarget table?  调用方已经算好的目标格，形如 { id = <space id>, index = <yabai index> }。
+--                            对得上的话 focusByIndex 就不用再花 ~40ms 查一次 id → index
+--                            （swap_space_and_app 本来就查过 yabai，顺手传进来）。
+--                            ⚠️ 必须带 id：本函数会拿它和自己算出来的 targetId 核对，
+--                            对不上就丢掉只用自己的（两次定位之间鼠标可能已经移到另一块屏了，
+--                            那时候照用外面给的 index 会切错格）。
 -- @return boolean  是否发起成功（到边缘也算成功，此时 onDone(false) 会被调用）
 -- @return string?  失败原因
-function M.switch_current_space(direction, method, onDone)
+function M.switch_current_space(direction, method, onDone, knownTarget)
     method = method or SPACE_SWITCH_METHOD
 
     local step = DIRECTIONS[direction]
@@ -914,11 +1062,19 @@ function M.switch_current_space(direction, method, onDone)
     local nb, nbErr = neighborSpaceUnderMouse(step)
     if not nb then return fail(nbErr) end
 
+    -- ⚠️ 只有外面给的 id 和自己算出来的 targetId 是同一格，才敢用外面给的 index
+    if knownTarget and knownTarget.id == nb.targetId then
+        nb.targetYabaiIndex = knownTarget.index
+    elseif knownTarget then
+        vlog("调用方给的目标 space id=%s 和自己算出来的 %s 不一致，丢掉外面那份 index",
+            tostring(knownTarget.id), tostring(nb.targetId))
+    end
+
     if not nb.targetId then
         -- ⭐ 这条路不切 space，所以 alert 当场弹是安全的
         --    （切完再弹会被钉死在旧的那格上，见 CLAUDE.md「别动这些」）
         local msg = string.format("已经是屏幕 '%s' 的%s一格（第 %d/%d 格），不切",
-            nb.screen:name() or "?", step > 0 and "最右" or "最左", nb.pos, nb.count)
+            nb.screenName, step > 0 and "最右" or "最左", nb.pos, nb.count)
         print("[window_control] " .. msg)
         hs.alert.show("🔚 " .. msg)
         if onDone then onDone(false) end
@@ -932,10 +1088,28 @@ function M.switch_current_space(direction, method, onDone)
     --    上一次的 timer 被停掉 → onDone 永远不来 → busy 永远放不掉 →
     --    之后所有 swap 都被拦死，只能 hs.reload()（实测日志：2026-09-18 21:57 连着三次「还没走完」）。
     -- ⚠️ 忽略的时候必须把 onDone(false) 叫一声，否则换成【本次】调用方的锁放不掉。
+    -- ⚠️⚠️ 这把锁【必须会过期】：轮询的谓词一旦抛错，waitUntil 会静默 stop 且永远不调 actionFn
+    --    （见 stepsToTarget 上面那段 + SWITCH_LOCK_TTL），settle() 不跑、槽位永远占着 ——
+    --    于是之后每一次切 space 都在这里被拦，每一次 swap 都变成「窗口照搬、space 不切」且
+    --    因为有 onDone(false) 连告警都没有，只能 hs.reload()。这就是用户报的
+    --    「偶尔切不过去，之后必须 reload」。所以超过 TTL 就把旧锁抢掉。
     if spaceSwap.timers.switch then
-        print("[window_control] 上一次切 space 还没走完，忽略这次调用")
-        if onDone then onDone(false) end
-        return true
+        local heldFor = hs.timer.secondsSinceEpoch() - (spaceSwap.switchStartedAt or 0)
+        if heldFor < SWITCH_LOCK_TTL then
+            print(string.format("[window_control] 上一次切 space 还没走完（%.1fs），忽略这次调用", heldFor))
+            if onDone then onDone(false) end
+            return true
+        end
+        print(string.format(
+            "[window_control] ⚠️ 上一次切 space 的锁已经占了 %.1fs（> %.1fs），"
+            .. "说明那次的复查 timer 死了（谓词抛错？），强制抢过来",
+            heldFor, SWITCH_LOCK_TTL))
+        pcall(function() spaceSwap.timers.switch:stop() end)
+        spaceSwap.timers.switch = nil
+        if spaceSwap.timers.switchGuard then
+            pcall(function() spaceSwap.timers.switchGuard:stop() end)
+            spaceSwap.timers.switchGuard = nil
+        end
     end
 
     -- ⭐ 复查的是「目标那块屏现在显示的是不是 target」，用 hs.spaces.activeSpaceOnScreen(screen)：
@@ -948,15 +1122,45 @@ function M.switch_current_space(direction, method, onDone)
     --    50ms 一跳的话主线程基本被占满，hs.ipc 会一直拒请求）
     -- 收尾：先把 timer 槽位腾出来【再】叫 onDone —— onDone 里可能又要发起一次切 space
     -- （swap_space_and_app 的 refocusAndFinish 就是），槽位还占着的话会被上面的连按保护拦掉
+    local startedAt = hs.timer.secondsSinceEpoch()
+    -- ⚠️ 屏幕名字【现在】就取好：下面几处日志是在 2.5~6s 后的 timer 回调里打的，那时候屏幕可能
+    --    已经拔掉了。而 actionFn 里一抛错，waitUntil 早就 stop 了，settle 就轮不到跑
+    --    （只能靠 switchGuard 捞回来）。能提前算的就别留到回调里。
+    local screenName = nb.screenName
+
+    -- ⚠️ 必须幂等：switchGuard 兜底和正常回调都可能走到这里（同 swap_space_and_app 的 finish）
+    local settled = false
     local function settle(landed)
+        if settled then return end
+        settled = true
+
         spaceSwap.timers.switch = nil
+        spaceSwap.switchStartedAt = nil
+        if spaceSwap.timers.switchGuard then
+            pcall(function() spaceSwap.timers.switchGuard:stop() end)
+            spaceSwap.timers.switchGuard = nil
+        end
+        vlog("settle(landed=%s)，从发起算起 %.2fs", tostring(landed),
+            hs.timer.secondsSinceEpoch() - startedAt)
         if onDone then onDone(landed) end
+    end
+
+    -- ⭐ 复查用的「到位了没有」。
+    -- ⚠️⚠️ 传 nb.screenUUID（36 位字符串），【不要】传 nb.screen 对象，而且必须 pcall ——
+    --    理由见 stepsToTarget 上面那段：屏幕断开瞬间 hs.spaces 会 error()，而 waitUntil
+    --    的谓词抛错会让整个复查静默死掉、锁永久占着。出错就当「还没到」，让 deadline 正常收口。
+    local function arrived()
+        local ok, id = pcall(hs.spaces.activeSpaceOnScreen, nb.screenUUID)
+        return ok and id == nb.targetId
     end
 
     local function attempt(nth)
         -- ⭐ 每次（包括补发）都按【当前】位置重新算方向和距离，别用发起时那个方向盲目重发。
         --    delta == 0 说明已经到位了（常见于 hs.spaces 读数滞后 / 上一次其实成功了）。
         local delta = stepsToTarget(nb)
+        vlog("attempt(%d) delta=%s active=%s target=%s", nth, tostring(delta),
+            tostring(select(2, pcall(hs.spaces.activeSpaceOnScreen, nb.screenUUID))),
+            tostring(nb.targetId))
         if delta == 0 then
             settle(true)
             return
@@ -969,12 +1173,9 @@ function M.switch_current_space(direction, method, onDone)
                 delta, dir))
         end
 
-        postSpaceSwitch(dir, method, nb)
+        postSpaceSwitch(dir, method, nb, nth)
 
         local deadline = hs.timer.secondsSinceEpoch() + SPACE_SWITCH_TIMEOUT
-        local function arrived()
-            return hs.spaces.activeSpaceOnScreen(nb.screen) == nb.targetId
-        end
 
         spaceSwap.timers.switch = hs.timer.waitUntil(
             function() return arrived() or hs.timer.secondsSinceEpoch() > deadline end,
@@ -991,7 +1192,7 @@ function M.switch_current_space(direction, method, onDone)
                         "[window_control] ⚠️ 发了 %d 次也没切到屏幕 '%s' 的第 %d 格，放弃"
                         .. "（系统设置 → 键盘 → 键盘快捷键 → 调度中心里"
                         .. "「移到左边/右边一个空间」是不是被关掉了？）",
-                        nth, nb.screen:name() or "?", nb.pos + step))
+                        nth, screenName, nb.pos + step))
                     settle(false)
                     return
                 end
@@ -1002,6 +1203,20 @@ function M.switch_current_space(direction, method, onDone)
             end,
             SPACE_SWITCH_POLL)
     end
+
+    -- ⚠️⚠️ 兜底 timer：和 swap_space_and_app 的 busyGuard 对称，少了它这把锁就是个没有出口的死锁。
+    --    只要 SWITCH_LOCK_TTL 到了还没 settle（复查 timer 被谁停掉、谓词抛错、postSpaceSwitch
+    --    抛错导致槽位没被重新赋值……任何原因），就强制收尾 —— 宁可报一次「没切成」，
+    --    也绝不能把槽位永久占着（那会让之后所有切 space / 交换静默失效，只能 reload）。
+    -- ⚠️ timer 存进 spaceSwap.timers 防 GC
+    spaceSwap.switchStartedAt = startedAt
+    spaceSwap.timers.switchGuard = hs.timer.doAfter(SWITCH_LOCK_TTL, function()
+        if settled then return end
+        print(string.format(
+            "[window_control] ⚠️ %.1fs 内切 space 没收尾（复查 timer 死了？），强制放掉锁",
+            SWITCH_LOCK_TTL))
+        settle(arrived())
+    end)
 
     attempt(1)
     return true
@@ -1023,6 +1238,19 @@ function M.swap_space_and_app(direction)
     -- ⭐ 连按保护：上一次的切 space 动画没走完就再来一次，会读到过期状态把窗口搬乱（实测过）
     if spaceSwap.busy then
         print("[window_control] 上一次 space 交换还没走完，忽略这次调用")
+        return true
+    end
+
+    -- ⭐⭐ switch_current_space 的锁也要在【搬窗口之前】就检查掉。
+    -- ⚠️ 以前只在最后调 switch_current_space 时才撞上那把锁，结果是：窗口已经全搬完了，
+    --    切 space 那一步被静默拦掉（还带着 onDone(false)，连告警都没有）——
+    --    留下「窗口换了、space 没换」的半成品，正是用户看到的「切换 current space 失败」之一。
+    --    宁可整件事都不做。（锁过期的情况交给 switch_current_space 里那段去抢，这里只看没过期的。）
+    if spaceSwap.timers.switch
+        and (hs.timer.secondsSinceEpoch() - (spaceSwap.switchStartedAt or 0)) < SWITCH_LOCK_TTL then
+        local msg = "上一次切 space 还没走完，这次交换整个跳过（窗口一个都没动）"
+        print("[window_control] " .. msg)
+        hs.alert.show("⏳ " .. msg)
         return true
     end
 
@@ -1141,7 +1369,10 @@ function M.swap_space_and_app(direction)
     --    它会再查一次当前 space（多一个 ~10ms 子进程）—— 换来的是那个函数可以独立对外用，值。
     -- ⚠️ 它没发起成功的话 onDone 不会被调用，所以这里得自己兜一下，
     --    否则 spaceSwap.busy 永远放不掉，后面所有交换都会被连按保护拦死。
-    if not M.switch_current_space(direction, SPACE_SWITCH_METHOD, refocusAndFinish) then
+    -- ⭐ target.index 是本函数刚用 yabai 算好的，顺手传下去 —— 走 yabai 那条路（补发 / MC 之外的
+    --    分支）就不用再花 ~40ms 查一次 id → index 了
+    if not M.switch_current_space(direction, SPACE_SWITCH_METHOD, refocusAndFinish,
+                                  { id = target.id, index = target.index }) then
         refocusAndFinish()
     end
 
