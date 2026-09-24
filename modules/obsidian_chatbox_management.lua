@@ -40,7 +40,7 @@ function M.main()
   local text = cursorSelection.getSelectedText()
   local needSendTextToChatbox = text ~= nil and text ~= ""
   if needSendTextToChatbox then
-    hs.pasteboard.setContents(text)
+    hs.eventtap.keyStroke({"cmd"}, "c")
     print(string.format("[obsidian_chatbox] 选中 %d 字，已写入剪贴板", #text))
   else
     print("[obsidian_chatbox] 没有选中文本，只做布局")
