@@ -5,7 +5,7 @@
 ## 目录结构
 
 ```
-init.lua        入口：require 各模块 + 暴露给外部调用的全局变量（wgestures 等）
+init.lua        入口：require 各模块 + 暴露给外部调用的全局变量（wgestures / btt 等）
 modules/        功能模块（一个功能一个文件）+ 快捷键注册
 utils/          底层通用工具
 test.md         手动调试用的 hs -c 命令备忘（改公开函数名时记得同步）
@@ -59,7 +59,7 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 - require 即自启：`sleep_mute`（`:87-88` 文件作用域启动 watcher）、`assign_shortcut_to_function`（文件作用域 bind）
 - 显式启动：`require("modules.unlock_watcher").start()`
 
-**`init.lua` 里的全局变量是故意的**（`test` / `cursorSelect` / `wgestures`），供外部手势 App 通过 `hs.ipc` 调用 —— 这也是 `init.lua:2` 要 `require("hs.ipc")` 的原因。不要把它们改成 local。`wgestures` 就是对外契约（`moveApp` / `moveSpaceAndApp` / `changeCurrentSpace` / `sendToChatbox`），改里面函数名要连带改 `wgestures` 和 `test.md`。
+**`init.lua` 里的全局变量是故意的**（`test` / `cursorSelect` / `wgestures` / `btt`），供外部手势 App 通过 `hs.ipc` 调用 —— 这也是 `init.lua:2` 要 `require("hs.ipc")` 的原因。不要把它们改成 local。`wgestures`（`moveApp` / `sendToChatbox`，给 WGestures 用）和 `btt`（`moveSpaceAndApp` / `changeCurrentSpace`，给 BTT 用）就是对外契约，改里面函数名要连带改这两个表、`test.md` 和 BTT / WGestures 里的命令。
 
 **⚠️ GC 陷阱 —— 本仓库最重要的一条约定**：`hs.caffeinate.watcher`、`hs.timer.doAfter`、`hs.eventtap` 的返回值必须存到 module 级变量（或全局），否则会被 GC 掉，watcher/timer 静默失效。见 `unlock_watcher.lua:36-40`（`-- 不这么做的话会被 GC，watcher 就失效了！`）和 commit `aaeccf0`「修复了doAfter被垃圾回收」。写新代码时照做。
 
@@ -78,7 +78,7 @@ common.sequence({
 ```lua
 local toggleAppBindings = { {mods = {"option"}, key = "space", app = "Chatbox"} }
 ```
-现有绑定：`⌥Space` 切换 Chatbox、`⌃⌘Z` Obsidian+Chatbox 布局、`⌘⌥T` Kiro CLI → 翻译。space 那几个函数目前**没绑快捷键**，只经 `wgestures` / `hs -c` 调用。
+现有绑定：`⌥Space` 切换 Chatbox、`⌃⌘Z` Obsidian+Chatbox 布局、`⌘⌥T` Kiro CLI → 翻译。space 那几个函数目前**没绑快捷键**，只经 `btt` / `wgestures` + `hs -q -c` 调用。
 
 **日志**：三种风格并存，改哪个文件就跟哪个文件的风格。主流是带模块前缀的 print：
 ```lua
@@ -119,6 +119,11 @@ hs -c 'require("utils.window_control").swap_space_and_app("right")'
 yabai -m query --spaces | jq -r '.[] | "disp\(.display) index\(.index) id=\(.id) \(if ."is-visible" then "可见" else "" end)"'
 ```
 ⚠️ 别连着快速发多条 `hs -c`：前一条还在占主线程时，后一条会被 `hs.ipc` 拒掉（`already recursing, refusing request.`）。
+
+**⚠️⚠️ `hs -c` 连发会让 Hammerspoon 整个崩溃**（2026-09-23 / 09-26 共 5 份崩溃报告，`~/Library/Logs/DiagnosticReports/Hammerspoon-*.ips`，栈全是 `ipc_callback → … → ipc_sendMessage → CFMessagePortIsValid` 的 PAC 校验失败 = 用了已释放的端口）。原因在 `hs/ipc.lua`：每个 `print` 都会被同步 `sendMessage` 给所有活着的 CLI 客户端，等回复时转 runloop，下一条请求在里面重入，重入期间某个客户端端口被 `delete`，外层还在用它。所以：
+- 外部 App（BTT / WGestures）一律用 **`hs -q -c`**：quiet 模式下 hs.ipc 不把 print 转发给这个客户端
+- `init.lua` 的 `wgestures.*` / `btt.*` 用 `deferOutOfIpc` 把活儿挪到 timer 里，让 ipc 回调当场返回
+- 被连发的入口（`swap_space_and_app` / `switch_current_space`）的连按保护必须是**函数第一件事、丢弃时不 print / 不 alert、通过后立刻上锁**
 
 ## yabai / space 操作（`utils/window_control.lua`）
 
@@ -187,7 +192,7 @@ yabai -m query --spaces | jq -r '.[] | "disp\(.display) index\(.index) id=\(.id)
 
 **⚠️⚠️ `hs.spaces.activeSpaceOnScreen` / `spacesForScreen` 一律传 36 位 UUID 字符串，别传 `hs.screen` 对象**。传对象时它会先自己 `screen:getUUID()`，而屏幕休眠 / 刚拔掉的那一小段时间 `getUUID()` 返回 `nil`（`hs/spaces.lua:495` 的注释就是为这件事加的守卫），接着 `#screenID` 直接 **`error()`**（`spaces.lua:357-359`）—— 不是返回 nil。这个 error 顺着上面那条 `waitUntil` 的坑，就是 **「偶尔切不过去，而且之后必须 `hs.reload()`」** 的根因：`spaceSwap.timers.switch` 永久占着 → 之后每次切 space 都被连按保护拦、每次交换都变成「窗口照搬、space 不切」，而且带着 `onDone(false)`，连告警都没有。现在 `nb.screenUUID` + `pcall` + `SWITCH_LOCK_TTL` 三道一起解决。
 
-**⭐ `switch_current_space` 有自己的连按保护，判据是 `spaceSwap.timers.switch` 还挂着**（现在还要没超过 `SWITCH_LOCK_TTL`；超了就把旧锁抢掉）。以前这里是「把上一次的 `waitUntil` 停掉」，那是能把整个功能**永久卡死**的坑：`swap_space_and_app` 把 `spaceSwap.busy` 的释放挂在这个 `waitUntil` 的 `onDone` 上，`wgestures.changeCurrentSpace` 或第二次手势调进来就把它停掉 → `onDone` 永远不来 → `busy` 再也放不掉 → 之后每次交换都被拦（日志刷「上一次 space 交换还没走完，忽略这次调用」，只能 `hs.reload()`）。两条配套约定：① 拦掉这次调用时**也要 `onDone(false)`**，否则换成本次调用方的锁放不掉；② `swap_space_and_app` 另外挂了个 `spaceSwap.timers.busyGuard` 兜底 timer（`BUSY_GUARD_TIMEOUT`）强制放锁，`finish()` 是幂等的。
+**⭐ `switch_current_space` 有自己的连按保护，判据是 `spaceSwap.switchStartedAt` 有值**（函数开头检查通过就立刻上锁，别改回 `timers.switch` —— 它要等 `attempt()` 里发完命令才赋值，中间的日志一转 runloop，重入就钻过去了）（现在还要没超过 `SWITCH_LOCK_TTL`；超了就把旧锁抢掉）。以前这里是「把上一次的 `waitUntil` 停掉」，那是能把整个功能**永久卡死**的坑：`swap_space_and_app` 把 `spaceSwap.busy` 的释放挂在这个 `waitUntil` 的 `onDone` 上，`btt.changeCurrentSpace` 或第二次手势调进来就把它停掉 → `onDone` 永远不来 → `busy` 再也放不掉 → 之后每次交换都被拦（日志刷「上一次 space 交换还没走完，忽略这次调用」，只能 `hs.reload()`）。两条配套约定：① 拦掉这次调用时**也要 `onDone(false)`**，否则换成本次调用方的锁放不掉；② `swap_space_and_app` 另外挂了个 `spaceSwap.timers.busyGuard` 兜底 timer（`BUSY_GUARD_TIMEOUT`）强制放锁，`finish()` 是幂等的。
 
 **⚠️ `pressArrow` 的 4 个按键事件每条链要用独立的 timer 槽位**（`spaceSwap.timers["keys"..n]`）。共用一个槽位时，后一条链会覆盖前一条、把它的 `doAfter` GC 掉 —— 断在「ctrl 已按下、还没抬起」那一步的话，系统会一直认为 ctrl 是按住的，之后所有 ⌃←/⌃→ 都失效，正常打字也乱掉。
 

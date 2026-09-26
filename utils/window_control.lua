@@ -1048,19 +1048,72 @@ end
 -- @return boolean  是否发起成功（到边缘也算成功，此时 onDone(false) 会被调用）
 -- @return string?  失败原因
 function M.switch_current_space(direction, method, onDone, knownTarget)
+    -- ⭐ 连按保护：上一次切 space 的复查还挂着就直接忽略这次。
+    -- ⚠️ 这一段必须是函数的【第一件事】，而且丢弃时【不许 print / alert】：
+    --    BTT 连发 `hs -c` 时，每个 print 都会被 hs.ipc 同步 sendMessage 给所有活着的 CLI 实例，
+    --    sendMessage 等回复时会转 runloop，下一条 ipc 请求就在里面重入执行 ——
+    --    重入期间某个 CLI 的端口被 delete 掉、外层还在用它，Hammerspoon 整个崩溃
+    --    （崩溃报告 2026-09-23 / 09-26 共 5 份，栈全是 ipc_sendMessage → CFMessagePortIsValid）。
+    -- ⚠️ 以前这里是「把上一次的 waitUntil 停掉」，那是个能把整个功能卡死的坑：
+    --    swap_space_and_app 把 spaceSwap.busy 的释放挂在这个 waitUntil 的 onDone 上，
+    --    这时候只要有人（wgestures.changeCurrentSpace / 再来一次手势）调进来，
+    --    上一次的 timer 被停掉 → onDone 永远不来 → busy 永远放不掉 →
+    --    之后所有 swap 都被拦死，只能 hs.reload()（实测日志：2026-09-18 21:57 连着三次「还没走完」）。
+    -- ⚠️ 忽略的时候必须把 onDone(false) 叫一声，否则换成【本次】调用方的锁放不掉。
+    -- ⚠️⚠️ 这把锁【必须会过期】：轮询的谓词一旦抛错，waitUntil 会静默 stop 且永远不调 actionFn
+    --    （见 stepsToTarget 上面那段 + SWITCH_LOCK_TTL），settle() 不跑、槽位永远占着 ——
+    --    于是之后每一次切 space 都在这里被拦，每一次 swap 都变成「窗口照搬、space 不切」且
+    --    因为有 onDone(false) 连告警都没有，只能 hs.reload()。这就是用户报的
+    --    「偶尔切不过去，之后必须 reload」。所以超过 TTL 就把旧锁抢掉。
+    -- ⭐ 锁的标志是 switchStartedAt（不是 timers.switch）：timers.switch 要等 attempt() 里
+    --    postSpaceSwitch 之后才赋值，中间那几行 vlog / print 一转 runloop，重入的调用就会从这个空档钻过去。
+    if spaceSwap.switchStartedAt then
+        local heldFor = hs.timer.secondsSinceEpoch() - spaceSwap.switchStartedAt
+        if heldFor < SWITCH_LOCK_TTL then
+            if onDone then onDone(false) end
+            return true
+        end
+        -- 锁过期是罕见路径（复查 timer 死了），这里打日志没关系
+        print(string.format(
+            "[window_control] ⚠️ 上一次切 space 的锁已经占了 %.1fs（> %.1fs），"
+            .. "说明那次的复查 timer 死了（谓词抛错？），强制抢过来",
+            heldFor, SWITCH_LOCK_TTL))
+        pcall(function() spaceSwap.timers.switch:stop() end)
+        spaceSwap.timers.switch = nil
+        if spaceSwap.timers.switchGuard then
+            pcall(function() spaceSwap.timers.switchGuard:stop() end)
+            spaceSwap.timers.switchGuard = nil
+        end
+    end
+
+    -- ⭐ 检查通过就【立刻】上锁，后面任何 print 引发的重入都会被上面拦掉
+    local startedAt = hs.timer.secondsSinceEpoch()
+    spaceSwap.switchStartedAt = startedAt
+
+    -- 还没发起就结束（参数错 / 定位失败 / 到边缘）时放锁。
+    -- ⚠️ 只放自己那把：锁要是已经被别人（过期抢锁）换掉了，别误放别人的
+    local function releaseLock()
+        if spaceSwap.switchStartedAt == startedAt then spaceSwap.switchStartedAt = nil end
+    end
+
     method = method or SPACE_SWITCH_METHOD
 
     local step = DIRECTIONS[direction]
     if not step then
+        releaseLock()
         return fail(string.format("方向只能是 left 或 right，收到 '%s'", tostring(direction)))
     end
     if method ~= "shortcut" and method ~= "yabai" then
+        releaseLock()
         return fail(string.format("切 space 的方式只能是 shortcut 或 yabai，收到 '%s'",
             tostring(method)))
     end
 
     local nb, nbErr = neighborSpaceUnderMouse(step)
-    if not nb then return fail(nbErr) end
+    if not nb then
+        releaseLock()
+        return fail(nbErr)
+    end
 
     -- ⚠️ 只有外面给的 id 和自己算出来的 targetId 是同一格，才敢用外面给的 index
     if knownTarget and knownTarget.id == nb.targetId then
@@ -1077,39 +1130,10 @@ function M.switch_current_space(direction, method, onDone, knownTarget)
             nb.screenName, step > 0 and "最右" or "最左", nb.pos, nb.count)
         print("[window_control] " .. msg)
         hs.alert.show("🔚 " .. msg)
+        -- 先放锁再叫 onDone：onDone 里可能又要发起一次切 space
+        releaseLock()
         if onDone then onDone(false) end
         return true
-    end
-
-    -- ⭐ 连按保护：上一次切 space 的复查还挂着就直接忽略这次。
-    -- ⚠️ 以前这里是「把上一次的 waitUntil 停掉」，那是个能把整个功能卡死的坑：
-    --    swap_space_and_app 把 spaceSwap.busy 的释放挂在这个 waitUntil 的 onDone 上，
-    --    这时候只要有人（wgestures.changeCurrentSpace / 再来一次手势）调进来，
-    --    上一次的 timer 被停掉 → onDone 永远不来 → busy 永远放不掉 →
-    --    之后所有 swap 都被拦死，只能 hs.reload()（实测日志：2026-09-18 21:57 连着三次「还没走完」）。
-    -- ⚠️ 忽略的时候必须把 onDone(false) 叫一声，否则换成【本次】调用方的锁放不掉。
-    -- ⚠️⚠️ 这把锁【必须会过期】：轮询的谓词一旦抛错，waitUntil 会静默 stop 且永远不调 actionFn
-    --    （见 stepsToTarget 上面那段 + SWITCH_LOCK_TTL），settle() 不跑、槽位永远占着 ——
-    --    于是之后每一次切 space 都在这里被拦，每一次 swap 都变成「窗口照搬、space 不切」且
-    --    因为有 onDone(false) 连告警都没有，只能 hs.reload()。这就是用户报的
-    --    「偶尔切不过去，之后必须 reload」。所以超过 TTL 就把旧锁抢掉。
-    if spaceSwap.timers.switch then
-        local heldFor = hs.timer.secondsSinceEpoch() - (spaceSwap.switchStartedAt or 0)
-        if heldFor < SWITCH_LOCK_TTL then
-            print(string.format("[window_control] 上一次切 space 还没走完（%.1fs），忽略这次调用", heldFor))
-            if onDone then onDone(false) end
-            return true
-        end
-        print(string.format(
-            "[window_control] ⚠️ 上一次切 space 的锁已经占了 %.1fs（> %.1fs），"
-            .. "说明那次的复查 timer 死了（谓词抛错？），强制抢过来",
-            heldFor, SWITCH_LOCK_TTL))
-        pcall(function() spaceSwap.timers.switch:stop() end)
-        spaceSwap.timers.switch = nil
-        if spaceSwap.timers.switchGuard then
-            pcall(function() spaceSwap.timers.switchGuard:stop() end)
-            spaceSwap.timers.switchGuard = nil
-        end
     end
 
     -- ⭐ 复查的是「目标那块屏现在显示的是不是 target」，用 hs.spaces.activeSpaceOnScreen(screen)：
@@ -1122,7 +1146,6 @@ function M.switch_current_space(direction, method, onDone, knownTarget)
     --    50ms 一跳的话主线程基本被占满，hs.ipc 会一直拒请求）
     -- 收尾：先把 timer 槽位腾出来【再】叫 onDone —— onDone 里可能又要发起一次切 space
     -- （swap_space_and_app 的 refocusAndFinish 就是），槽位还占着的话会被上面的连按保护拦掉
-    local startedAt = hs.timer.secondsSinceEpoch()
     -- ⚠️ 屏幕名字【现在】就取好：下面几处日志是在 2.5~6s 后的 timer 回调里打的，那时候屏幕可能
     --    已经拔掉了。而 actionFn 里一抛错，waitUntil 早就 stop 了，settle 就轮不到跑
     --    （只能靠 switchGuard 捞回来）。能提前算的就别留到回调里。
@@ -1134,11 +1157,14 @@ function M.switch_current_space(direction, method, onDone, knownTarget)
         if settled then return end
         settled = true
 
-        spaceSwap.timers.switch = nil
-        spaceSwap.switchStartedAt = nil
-        if spaceSwap.timers.switchGuard then
-            pcall(function() spaceSwap.timers.switchGuard:stop() end)
-            spaceSwap.timers.switchGuard = nil
+        -- ⚠️ 锁已经被过期抢锁换成别人的了，就别去动别人的 timer 槽位
+        if spaceSwap.switchStartedAt == startedAt then
+            spaceSwap.timers.switch = nil
+            spaceSwap.switchStartedAt = nil
+            if spaceSwap.timers.switchGuard then
+                pcall(function() spaceSwap.timers.switchGuard:stop() end)
+                spaceSwap.timers.switchGuard = nil
+            end
         end
         vlog("settle(landed=%s)，从发起算起 %.2fs", tostring(landed),
             hs.timer.secondsSinceEpoch() - startedAt)
@@ -1208,8 +1234,7 @@ function M.switch_current_space(direction, method, onDone, knownTarget)
     --    只要 SWITCH_LOCK_TTL 到了还没 settle（复查 timer 被谁停掉、谓词抛错、postSpaceSwitch
     --    抛错导致槽位没被重新赋值……任何原因），就强制收尾 —— 宁可报一次「没切成」，
     --    也绝不能把槽位永久占着（那会让之后所有切 space / 交换静默失效，只能 reload）。
-    -- ⚠️ timer 存进 spaceSwap.timers 防 GC
-    spaceSwap.switchStartedAt = startedAt
+    -- ⚠️ timer 存进 spaceSwap.timers 防 GC（锁本身在函数开头就已经上了）
     spaceSwap.timers.switchGuard = hs.timer.doAfter(SWITCH_LOCK_TTL, function()
         if settled then return end
         print(string.format(
@@ -1234,26 +1259,12 @@ end
 -- @param direction string  "left" 或 "right"
 -- @return boolean  是否成功（到边界的空操作也算成功）
 -- @return string?  失败原因
-function M.swap_space_and_app(direction)
-    -- ⭐ 连按保护：上一次的切 space 动画没走完就再来一次，会读到过期状态把窗口搬乱（实测过）
-    if spaceSwap.busy then
-        print("[window_control] 上一次 space 交换还没走完，忽略这次调用")
-        return true
-    end
-
-    -- ⭐⭐ switch_current_space 的锁也要在【搬窗口之前】就检查掉。
-    -- ⚠️ 以前只在最后调 switch_current_space 时才撞上那把锁，结果是：窗口已经全搬完了，
-    --    切 space 那一步被静默拦掉（还带着 onDone(false)，连告警都没有）——
-    --    留下「窗口换了、space 没换」的半成品，正是用户看到的「切换 current space 失败」之一。
-    --    宁可整件事都不做。（锁过期的情况交给 switch_current_space 里那段去抢，这里只看没过期的。）
-    if spaceSwap.timers.switch
-        and (hs.timer.secondsSinceEpoch() - (spaceSwap.switchStartedAt or 0)) < SWITCH_LOCK_TTL then
-        local msg = "上一次切 space 还没走完，这次交换整个跳过（窗口一个都没动）"
-        print("[window_control] " .. msg)
-        hs.alert.show("⏳ " .. msg)
-        return true
-    end
-
+-- swap_space_and_app 的本体。调用前 spaceSwap.busy 已经由外层置上。
+-- @return boolean  是否成功
+-- @return string?  失败原因
+-- @return boolean? true = 已经交给 switch_current_space 异步收尾（busy 由 finish() 放）；
+--                  否则（提前 return）由外层当场放掉 busy
+local function doSwap(direction)
     local step = DIRECTIONS[direction]
     if not step then
         return fail(string.format("方向只能是 left 或 right，收到 '%s'", tostring(direction)))
@@ -1305,8 +1316,6 @@ function M.swap_space_and_app(direction)
         current.index, target.index, #curWins, #targetWins)
     hs.alert.show(msg)
     print("[window_control] " .. msg)
-
-    spaceSwap.busy = true
 
     -- 先把眼前这格搬空、再把邻居搬进来 —— 视觉上是「一批换一批」；
     -- 反过来会出现两批窗口短暂叠在同一格上
@@ -1376,7 +1385,37 @@ function M.swap_space_and_app(direction)
         refocusAndFinish()
     end
 
-    return true
+    return true, nil, true
+end
+
+function M.swap_space_and_app(direction)
+    -- ⭐ 连按保护：上一次的切 space 动画没走完就再来一次，会读到过期状态把窗口搬乱（实测过）
+    -- ⭐⭐ switch_current_space 的锁也要在【搬窗口之前】就检查掉。
+    -- ⚠️ 以前只在最后调 switch_current_space 时才撞上那把锁，结果是：窗口已经全搬完了，
+    --    切 space 那一步被静默拦掉（还带着 onDone(false)，连告警都没有）——
+    --    留下「窗口换了、space 没换」的半成品，正是用户看到的「切换 current space 失败」之一。
+    --    宁可整件事都不做。（锁过期的情况交给 switch_current_space 里那段去抢，这里只看没过期的。）
+    -- ⚠️⚠️ 这两道检查必须是函数的【第一件事】，丢弃时【不许 print / alert】，
+    --    通过后【立刻】置 busy —— 理由见 switch_current_space 开头：BTT 连发 `hs -c` 时，
+    --    任何 print 都会让 hs.ipc 转 runloop、下一条请求重入执行，这是 Hammerspoon 整个崩溃的根因。
+    --    以前 busy 是在 spaceUnderMouse / 几次 yabai 查询 / print 之后才置上的，
+    --    重入的那一次看到 busy 还是 false，就会同时跑两次交换。
+    if spaceSwap.busy then return true end
+    if spaceSwap.switchStartedAt
+        and (hs.timer.secondsSinceEpoch() - spaceSwap.switchStartedAt) < SWITCH_LOCK_TTL then
+        return true
+    end
+    spaceSwap.busy = true
+
+    -- ⚠️ 本体抛错或提前 return（没交给异步收尾）时必须当场放掉 busy，否则要等 busyGuard
+    --    （那时它甚至可能还没创建），之后的交换全被拦死
+    local okCall, ok, err, handedOff = pcall(doSwap, direction)
+    if not okCall then
+        spaceSwap.busy = false
+        return fail("交换 space 时出错：" .. tostring(ok))
+    end
+    if not handedOff then spaceSwap.busy = false end
+    return ok, err
 end
 
 -- ============================================
