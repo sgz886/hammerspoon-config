@@ -82,6 +82,22 @@ local function formatUtc(digits)
   return s .. " UTC"
 end
 
+-- 同上，但换成 tz 时区的本地时间 → "yyyy/mm/dd hh:mm:ss[.mmm] UTC+10 (AEST)"
+-- ⭐ 交给 macOS 的 /bin/date + TZ 环境变量去算，夏令时由系统时区库判断，不自己写规则
+-- @param tz string  IANA 时区名，如 "Australia/Melbourne"
+local function formatInZone(digits, tz)
+  local sec = tonumber(digits:sub(1, 10))
+  local out = hs.execute(string.format("TZ=%q /bin/date -r %d '+%%Y/%%m/%%d %%H:%%M:%%S|%%z|%%Z'", tz, sec))
+  local time, offset, abbr = (out or ""):match("^(.-)|([+-]%d%d%d%d)|(%S+)")
+  if not time then return "（" .. tz .. " 时间转换失败）" end
+
+  if #digits == 13 then time = time .. "." .. digits:sub(11, 13) end
+  -- "+1000" → "UTC+10"，"+0530" → "UTC+5:30"
+  local sign, hh, mm = offset:match("([+-])(%d%d)(%d%d)")
+  local utcOffset = "UTC" .. sign .. tonumber(hh) .. (mm ~= "00" and (":" .. mm) or "")
+  return string.format("%s %s (%s)", time, utcOffset, abbr)
+end
+
 local function isDigits(s, ...)
   if not s:match("^%d+$") then return false end
   for _, n in ipairs({...}) do
@@ -130,7 +146,10 @@ return {
     -- UNIX 10 位（秒）/ 13 位（毫秒）时间戳。例：1790204980
     name = "timestamp",
     match = function(t) if isDigits(t, 10, 13) then return t end end,
-    action = showMessage("UTC 时间", function(t) return formatUtc(t) end),
+    action = showMessage("时间戳转换", function(t)
+      return "UTC:    " .. formatUtc(t) .. "\n"
+          .. "墨尔本: " .. formatInZone(t, "Australia/Melbourne")
+    end),
   },
   {
     -- 3~10 位纯小写字母：可能是 alias，也可能只是个英文单词，让用户选。例：dvvp

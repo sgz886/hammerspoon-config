@@ -1,6 +1,6 @@
 -- modules/clipboard_action.lua
 -- 选中文字 → ⌘C → trim → 按模式分派动作
--- ⭐ 外部入口：btt.clipboardAction()（init.lua），BTT 里用 `hs -q -c 'btt.clipboardAction()'`
+-- ⭐ 外部入口：wgestures.clipboardAction()（init.lua），WGestures 里用 `hs -q -c 'wgestures.clipboardAction()'`
 -- ⭐ 规则在 modules/clipboard_action_rules.lua，这里只管流程
 
 local rules = require("modules.clipboard_action_rules")

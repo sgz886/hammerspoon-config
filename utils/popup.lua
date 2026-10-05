@@ -14,7 +14,7 @@
 local M = {}
 
 local HANDLER = "popup"   -- JS 侧 window.webkit.messageHandlers.<HANDLER>
-local WIDTH = 380
+local WIDTH = 460
 
 -- 同一时刻只留一个弹窗
 -- current = { webview, options, prevApp }
@@ -53,7 +53,7 @@ local function buildHtml(title, body, options, closeLabel)
          -webkit-user-select: none; cursor: default; }
   h1 { font-size: 17px; margin: 0 0 10px; word-break: break-all; -webkit-user-select: text; }
   .body { font: 15px ui-monospace, Menlo, monospace; margin: 0 0 12px; word-break: break-all;
-          -webkit-user-select: text; }
+          white-space: pre-wrap; line-height: 1.6; -webkit-user-select: text; }
   .opt { display: block; width: 100%%; text-align: left; margin: 0 0 8px; padding: 9px 12px;
          font-size: 14px; border-radius: 8px; border: 1px solid #8884; background: #8881; }
   .opt:hover { background: #3478f633; }
@@ -122,7 +122,9 @@ function M.show(spec)
 
   local options = spec.options or {}
   local closeLabel = spec.closeLabel or "关闭"
-  local height = 110 + (spec.body and 36 or 0) + #options * 46
+  -- body 按行数长高（支持 \n 换行）
+  local bodyLines = spec.body and select(2, spec.body:gsub("\n", "")) + 1 or 0
+  local height = 110 + (bodyLines > 0 and (12 + bodyLines * 24) or 0) + #options * 46
 
   local uc = hs.webview.usercontent.new(HANDLER)
   local wv = hs.webview.new(frameOnMouseScreen(height), {developerExtrasEnabled = false}, uc)
