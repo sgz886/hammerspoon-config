@@ -48,10 +48,22 @@ function M.dispatch(text)
   end
 end
 
+-- 读剪贴板 → trim → dispatch
+-- @param emptyMsg string  剪贴板里没有文字时的提示
+local function dispatchClipboard(emptyMsg)
+  local text = trim(hs.pasteboard.getContents() or "")
+  if text == "" then
+    hs.alert.show(emptyMsg)
+    return
+  end
+  M.dispatch(text)
+end
+
 -- ============================================
 -- run: 主入口。⌘C 复制前台选中 → 等剪贴板变化 → trim → dispatch
--- ⭐ 用 changeCount 判断「真的复制到了」，而不是固定延时：
---    没选中文字时 ⌘C 不会改剪贴板，这时提示一下，不拿剪贴板里的旧内容去乱开 Google
+-- ⭐ 用 changeCount 判断「真的复制到了」，而不是固定延时
+-- ⭐ 超时剪贴板也没变（多半是没选中文字）时，不放弃，拿剪贴板里现有的内容照样走规则 ——
+--    方便先在别处复制好，再来触发
 -- ============================================
 function M.run()
   -- 连发保护：上一次还在等剪贴板，静默丢掉（见 design.md 的 ipc 崩溃那节）
@@ -66,18 +78,14 @@ function M.run()
     return ok and changed
   end, function()
     stopCopyTimers()
-    local text = trim(hs.pasteboard.getContents() or "")
-    if text == "" then
-      hs.alert.show("⚠️ 选中的内容不是文字")
-      return
-    end
-    M.dispatch(text)
+    dispatchClipboard("⚠️ 选中的内容不是文字")
   end, 0.02)
 
   copyTimers.guard = hs.timer.doAfter(COPY_TIMEOUT, function()
     stopCopyTimers()
-    print("[clipboard_action] ⚠️ ⌘C 之后剪贴板没变化，可能没选中文字")
-    hs.alert.show("⚠️ 没复制到选中的文字")
+    print("[clipboard_action] ⚠️ ⌘C 之后剪贴板没变化，改用剪贴板现有内容")
+    hs.alert.show("⚠️ 可能未选择文字,继续使用剪贴板执行动态行为")
+    dispatchClipboard("⚠️ 剪贴板里也没有文字")
   end)
 end
 
