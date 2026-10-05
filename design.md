@@ -18,6 +18,7 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 |---|---|
 | `assign_shortcut_to_function.lua` | **唯一的快捷键注册处**。文件作用域直接 `hs.hotkey.bind` |
 | `obsidian_chatbox_management.lua` | `⌃⌘Z`：按当前前台 App 三态切换，把 Obsidian + Chatbox 平铺到当前 Space |
+| `clipboard_action.lua` + `clipboard_action_rules.lua` | 选中文字 → ⌘C → trim → 按模式分派（case / phonetool / ticket / harbinger / 时间戳 / Google）。入口 `wgestures.clipboardAction()`。**加 / 改规则只改 `clipboard_action_rules.lua`**：有序规则表 `{name, match, action}`，第一条命中的执行，`action` 用文件顶部的工厂 `openUrl` / `choose` / `showMessage` 生成（`choose` 的选项本身也是动作，可组合） |
 | `kiro-cli_copy_and_send_to_chatbox_translate.lua` | `⌘⌥T`：在 Kiro CLI 里 copy，再丢给 Chatbox 的 translator |
 | `mwinit.lua` + `mwinit-auto.sh` + `mwinit_test.md` | 每天自动跑一次 Amazon SSO 登录（见下文） |
 | `unlock_watcher.lua` | `hs.caffeinate.watcher` 事件分发；mwinit 的唯一调用方 |
@@ -34,6 +35,8 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 | `window_control.lua` | 窗口 / space 编排中枢（见下面「window_control 的公开 API」） |
 | `common.lua` | `M.sequence(steps)`、`M.CHATBOX_APP` / `M.OBSIDIAN_APP`、`M.CHATBOX_SESSION` + `M.CHATBOX_SESSION_HOTKEY` |
 | `get_cursor_selected_text.lua` | `M.getSelectedText()`、`M.alertSelectedText()`、`M.test()`。走 Accessibility API（`hs.axuielement` → `AXFocusedUIElement` → `AXSelectedText`） |
+| `browser.lua` | `M.openInNewChromeWindow(url)`（`open -na "Google Chrome" --args --new-window`）、`M.encode(s)` |
+| `popup.lua` | 可复用 hs.webview 小弹窗：`M.show{title, body?, options?, closeLabel?}`、`M.choose(title, {{label, onSelect}})`、`M.message(title, body)`、`M.close()`。键盘 1..9 选 / Esc 关，不阻塞主线程，同时只留一个 |
 | `mylog.lua` | `M.new(id, level)` → `.e/.w/.i/.d/.v` + printf 变体 `.ef/.wf/.f/.df/.vf`。自己写的 `hs.logger` 替代品，带毫秒时间戳 |
 
 ### window_control 的公开 API
@@ -59,7 +62,7 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 - require 即自启：`sleep_mute`（`:87-88` 文件作用域启动 watcher）、`assign_shortcut_to_function`（文件作用域 bind）
 - 显式启动：`require("modules.unlock_watcher").start()`
 
-**`init.lua` 里的全局变量是故意的**（`test` / `cursorSelect` / `wgestures` / `btt`），供外部手势 App 通过 `hs.ipc` 调用 —— 这也是 `init.lua:2` 要 `require("hs.ipc")` 的原因。不要把它们改成 local。`wgestures`（`moveApp` / `sendToChatbox`，给 WGestures 用）和 `btt`（`moveSpaceAndApp` / `changeCurrentSpace`，给 BTT 用）就是对外契约，改里面函数名要连带改这两个表、`test.md` 和 BTT / WGestures 里的命令。
+**`init.lua` 里的全局变量是故意的**（`test` / `cursorSelect` / `wgestures` / `btt`），供外部手势 App 通过 `hs.ipc` 调用 —— 这也是 `init.lua:2` 要 `require("hs.ipc")` 的原因。不要把它们改成 local。`wgestures`（`moveApp` / `sendToChatbox` / `clipboardAction`，给 WGestures 用）和 `btt`（`moveSpaceAndApp` / `changeCurrentSpace`，给 BTT 用）就是对外契约，改里面函数名要连带改这两个表、`test.md` 和 BTT / WGestures 里的命令。
 
 **⚠️ GC 陷阱 —— 本仓库最重要的一条约定**：`hs.caffeinate.watcher`、`hs.timer.doAfter`、`hs.eventtap` 的返回值必须存到 module 级变量（或全局），否则会被 GC 掉，watcher/timer 静默失效。见 `unlock_watcher.lua:36-40`（`-- 不这么做的话会被 GC，watcher 就失效了！`）和 commit `aaeccf0`「修复了doAfter被垃圾回收」。写新代码时照做。
 
@@ -235,6 +238,8 @@ init.lua → unlock_watcher.start()
 - **⚠️ 间隔要用 `hs.timer.doAfter` 串发，不要用 `hs.timer.usleep` 干等**：Hammerspoon 单线程，`usleep` 卡住的那几十毫秒会让 `hs.ipc` 拒请求、hotkey 和 eventtap 一起停摆。见上面「性能」那段。
 - **`mwinit-auto.sh` 里的 `set env(PATH)` 不能删**：脚本由 iTerm 的 `command` 参数直接启动，中间不经过任何 shell，也就没有 `path_helper` —— PATH 只有 launchd 默认的 `/usr/bin:/bin:/usr/sbin:/sbin`（`launchctl getenv PATH` 是空的）。而 `mwinit` 在 `/usr/local/bin`，不补 PATH 会直接 `couldn't execute`。同理别把 `write text "exec ..."` 改回来 —— 那个写法要白等 zsh + oh-my-zsh + p10k 初始化（实测 0.8~1.3s）。
 - **⚠️ 切 Space / 切窗口之后不要马上 `hs.alert.show`**：`hs.alert` 底层是 `hs.canvas`，默认 behavior 是 `0`（不含 `canJoinAllSpaces` / `moveToActiveSpace`），alert 会被**钉死在「创建那一瞬间活动的那个 Space」**上，之后 Space 怎么切它都不动；`screen` 参数默认取 `hs.screen.mainScreen()`（= 当前有焦点窗口的那块屏），多屏时同理会取错。而 `hs.osascript.applescript` 虽然是同步返回的，返回时 macOS 的 Space 切换**还没走完**（实测晚约 0.5s）。所以 mwinit 的提示挪进了 `mwinit-auto.sh` 的 `hsAlert`（那时 iTerm 早在前台，Space 和屏幕都对）。别把它挪回 `M.mwinit()` 里 —— iTerm 在别的 Space 时你会看不见那个提示。
+
+- **⚠️ 别对 Hammerspoon 自己的窗口用 `hs.window` / `webview:hswindow()`**：它走 Accessibility 查询本进程，回答查询的正是被占着的主线程，实测 80ms ~ 3.1s，期间整个 Hammerspoon 卡死。`utils/popup.lua` 因此只用 `hs.focus()`（1~5ms）激活，并且常驻一个 webview 复用、只用 `evaluateJavaScript` 换内容。顺带：隐藏的 webview 里 `requestAnimationFrame` 不触发，要量高度请同步读 `offsetHeight`。
 
 ## 已知遗留问题（历史遗留，不用顺手修）
 
