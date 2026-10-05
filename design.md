@@ -18,6 +18,7 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 |---|---|
 | `assign_shortcut_to_function.lua` | **唯一的快捷键注册处**。文件作用域直接 `hs.hotkey.bind` |
 | `obsidian_chatbox_management.lua` | `⌃⌘Z`：按当前前台 App 三态切换，把 Obsidian + Chatbox 平铺到当前 Space |
+| `clipboard_action.lua` + `clipboard_action_rules.lua` | 选中文字 → ⌘C → trim → 按模式分派（case / phonetool / ticket / harbinger / 时间戳 / Google）。入口 `wgestures.clipboardAction()`。**加 / 改规则只改 `clipboard_action_rules.lua`**：有序规则表 `{name, match, action}`，第一条命中的执行，`action` 用文件顶部的工厂 `openUrl` / `choose` / `showMessage` 生成（`choose` 的选项本身也是动作，可组合） |
 | `kiro-cli_copy_and_send_to_chatbox_translate.lua` | `⌘⌥T`：在 Kiro CLI 里 copy，再丢给 Chatbox 的 translator |
 | `mwinit.lua` + `mwinit-auto.sh` + `mwinit_test.md` | 每天自动跑一次 Amazon SSO 登录（见下文） |
 | `unlock_watcher.lua` | `hs.caffeinate.watcher` 事件分发；mwinit 的唯一调用方 |
@@ -34,6 +35,8 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 | `window_control.lua` | 窗口 / space 编排中枢（见下面「window_control 的公开 API」） |
 | `common.lua` | `M.sequence(steps)`、`M.CHATBOX_APP` / `M.OBSIDIAN_APP`、`M.CHATBOX_SESSION` + `M.CHATBOX_SESSION_HOTKEY` |
 | `get_cursor_selected_text.lua` | `M.getSelectedText()`、`M.alertSelectedText()`、`M.test()`。走 Accessibility API（`hs.axuielement` → `AXFocusedUIElement` → `AXSelectedText`） |
+| `browser.lua` | `M.openInNewChromeWindow(url)`（`open -na "Google Chrome" --args --new-window`）、`M.encode(s)` |
+| `popup.lua` | 可复用 hs.webview 小弹窗：`M.show{title, body?, options?, closeLabel?}`、`M.choose(title, {{label, onSelect}})`、`M.message(title, body)`、`M.close()`。键盘 1..9 选 / Esc 关，不阻塞主线程，同时只留一个 |
 | `mylog.lua` | `M.new(id, level)` → `.e/.w/.i/.d/.v` + printf 变体 `.ef/.wf/.f/.df/.vf`。自己写的 `hs.logger` 替代品，带毫秒时间戳 |
 
 ### window_control 的公开 API
@@ -59,7 +62,7 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 - require 即自启：`sleep_mute`（`:87-88` 文件作用域启动 watcher）、`assign_shortcut_to_function`（文件作用域 bind）
 - 显式启动：`require("modules.unlock_watcher").start()`
 
-**`init.lua` 里的全局变量是故意的**（`test` / `cursorSelect` / `wgestures` / `btt`），供外部手势 App 通过 `hs.ipc` 调用 —— 这也是 `init.lua:2` 要 `require("hs.ipc")` 的原因。不要把它们改成 local。`wgestures`（`moveApp` / `sendToChatbox`，给 WGestures 用）和 `btt`（`moveSpaceAndApp` / `changeCurrentSpace`，给 BTT 用）就是对外契约，改里面函数名要连带改这两个表、`test.md` 和 BTT / WGestures 里的命令。
+**`init.lua` 里的全局变量是故意的**（`test` / `cursorSelect` / `wgestures` / `btt`），供外部手势 App 通过 `hs.ipc` 调用 —— 这也是 `init.lua:2` 要 `require("hs.ipc")` 的原因。不要把它们改成 local。`wgestures`（`moveApp` / `sendToChatbox` / `clipboardAction`，给 WGestures 用）和 `btt`（`moveSpaceAndApp` / `changeCurrentSpace`，给 BTT 用）就是对外契约，改里面函数名要连带改这两个表、`test.md` 和 BTT / WGestures 里的命令。
 
 **⚠️ GC 陷阱 —— 本仓库最重要的一条约定**：`hs.caffeinate.watcher`、`hs.timer.doAfter`、`hs.eventtap` 的返回值必须存到 module 级变量（或全局），否则会被 GC 掉，watcher/timer 静默失效。见 `unlock_watcher.lua:36-40`（`-- 不这么做的话会被 GC，watcher 就失效了！`）和 commit `aaeccf0`「修复了doAfter被垃圾回收」。写新代码时照做。
 

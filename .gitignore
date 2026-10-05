@@ -1,3 +1,5 @@
 .idea
 # 不带斜杠的模式会在任意层级匹配
 .DS_Store
+
+draft*

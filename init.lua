@@ -37,7 +37,11 @@ wgestures = {
   end,
   sendToChatbox = function(sessionName)
     deferOutOfIpc(require("utils.window_control").copyToChatbox, sessionName)
-  end
+  end,
+  -- 选中文字 → 按模式分派（打开 case / phonetool / ticket / 时间戳转换 …）
+  clipboardAction = function()
+    deferOutOfIpc(require("modules.clipboard_action").run)
+  end,
 }
 
 btt = {
