@@ -44,7 +44,7 @@ local READY_POLL    = 0.05
 -- ⚠️ 确认不再复现之后改回 false —— 每次切 space 会多打 4~6 行。
 -- ⚠️ 这些日志只许用 hs.spaces（~0~3ms）和纯 Lua 值，【不要】为了打日志加 yabai.query
 --    （一次 40ms，放进轮询回调会把主线程压满，见 design.md 性能那段）。
-local VERBOSE = true
+local VERBOSE = false
 
 -- ──────────── 通用内部工具 ────────────
 -- 通用工具函数集合
@@ -52,7 +52,7 @@ local VERBOSE = true
 -- VERBOSE 开着才打的诊断日志
 local function vlog(fmt, ...)
     if not VERBOSE then return end
-    print("[window_control][dbg] " .. string.format(fmt, ...))
+    print("[window_control][debug] " .. string.format(fmt, ...))
 end
 
 -- 失败的统一出口：控制台留日志，屏幕上给一眼能看懂的提示
