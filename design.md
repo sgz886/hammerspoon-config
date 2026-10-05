@@ -239,6 +239,8 @@ init.lua → unlock_watcher.start()
 - **`mwinit-auto.sh` 里的 `set env(PATH)` 不能删**：脚本由 iTerm 的 `command` 参数直接启动，中间不经过任何 shell，也就没有 `path_helper` —— PATH 只有 launchd 默认的 `/usr/bin:/bin:/usr/sbin:/sbin`（`launchctl getenv PATH` 是空的）。而 `mwinit` 在 `/usr/local/bin`，不补 PATH 会直接 `couldn't execute`。同理别把 `write text "exec ..."` 改回来 —— 那个写法要白等 zsh + oh-my-zsh + p10k 初始化（实测 0.8~1.3s）。
 - **⚠️ 切 Space / 切窗口之后不要马上 `hs.alert.show`**：`hs.alert` 底层是 `hs.canvas`，默认 behavior 是 `0`（不含 `canJoinAllSpaces` / `moveToActiveSpace`），alert 会被**钉死在「创建那一瞬间活动的那个 Space」**上，之后 Space 怎么切它都不动；`screen` 参数默认取 `hs.screen.mainScreen()`（= 当前有焦点窗口的那块屏），多屏时同理会取错。而 `hs.osascript.applescript` 虽然是同步返回的，返回时 macOS 的 Space 切换**还没走完**（实测晚约 0.5s）。所以 mwinit 的提示挪进了 `mwinit-auto.sh` 的 `hsAlert`（那时 iTerm 早在前台，Space 和屏幕都对）。别把它挪回 `M.mwinit()` 里 —— iTerm 在别的 Space 时你会看不见那个提示。
 
+- **⚠️ 别对 Hammerspoon 自己的窗口用 `hs.window` / `webview:hswindow()`**：它走 Accessibility 查询本进程，回答查询的正是被占着的主线程，实测 80ms ~ 3.1s，期间整个 Hammerspoon 卡死。`utils/popup.lua` 因此只用 `hs.focus()`（1~5ms）激活，并且常驻一个 webview 复用、只用 `evaluateJavaScript` 换内容。顺带：隐藏的 webview 里 `requestAnimationFrame` 不触发，要量高度请同步读 `offsetHeight`。
+
 ## 已知遗留问题（历史遗留，不用顺手修）
 
 - `modules/test.lua:55` require 了不存在的 `modules.sleep_volume`（已改名 `sleep_mute`），所以 `test.simulateSleep()` 是坏的 —— 用 `test.simulateSleepLogic()`。

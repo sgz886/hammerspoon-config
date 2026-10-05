@@ -9,6 +9,9 @@ require("modules.assign_shortcut_to_function")
 
 cursorSelect = require("utils.get_cursor_selected_text")
 
+-- 提前建好弹窗用的 webview，第一次弹窗就不用现场起网页进程（见 utils/popup.lua 文件头）
+require("utils.popup").warmup()
+
 -- 挪出 ipc 回调的 timer，存起来防 GC（见 unlock_watcher.lua 的同类注释）
 local ipcDeferred, ipcDeferredSeq = {}, 0
 
