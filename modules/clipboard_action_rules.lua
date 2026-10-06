@@ -121,7 +121,7 @@ return {
   {
     -- 亚马逊邮箱，取 @ 前面的 alias。例：dvvp@amazon.com
     name = "employee_email",
-    match = function(t) return t:lower():match("^([%w%._%-]+)@amazon%.com$") end,
+    match = function(t) return t:match("^(%l+)@amazon%.com$") end,
     action = openUrl(URL.PHONETOOL),
   },
   {
@@ -152,9 +152,9 @@ return {
     end),
   },
   {
-    -- 3~10 位纯小写字母：可能是 alias，也可能只是个英文单词，让用户选。例：dvvp
+    -- 3~8 位纯小写字母：可能是 alias，也可能只是个英文单词，让用户选。例：dvvp
     name = "employee_alias",
-    match = function(t) if #t >= 3 and #t <= 10 and t:match("^%l+$") then return t end end,
+    match = function(t) if #t >= 3 and #t <= 8 and t:match("^%l+$") then return t end end,
     action = choose({
       {label = "Phonetool",   action = openUrl(URL.PHONETOOL)},
       {label = "Google 搜索", action = openUrl(URL.GOOGLE, true)},
