@@ -24,8 +24,6 @@ Spoons/         空目录，本配置不使用任何 Spoon（无 hs.loadSpoon）
 | `unlock_watcher.lua` | `hs.caffeinate.watcher` 事件分发；mwinit 的唯一调用方 |
 | `sleep_mute.lua` | 息屏静音、解锁 3 秒后恢复原音量（带 5 次读回重试） |
 | `test.lua` | 音量/睡眠的手动测试台，作为全局 `test` 加载，在控制台调 `test.help()` |
-| `doubao_speak.lua` | 长按右 Cmd 唤起豆包语音输入。**已在 init.lua 里注释掉**（commit `02e1892`） |
-| `doubao_speak_github.lua` | 上面那个的早期实现，纯参考，从未被 require |
 
 ### utils/
 
@@ -87,7 +85,7 @@ local toggleAppBindings = { {mods = {"option"}, key = "space", app = "Chatbox"} 
 ```lua
 print(string.format("[unlock_watcher] event: %s (%d)", eventName, event))
 ```
-另有自研 `utils/mylog.lua`（只有 `doubao_speak.lua` 在用）；`hs.logger` 已经全仓库绝迹了，别再引入。给用户看的反馈用带 emoji 的 `hs.alert.show`（✅ ❌ ⚠️ 🔄 🔚 🔊 👆），失败一律走 `window_control.lua` 的私有 `fail()`（打日志 + 弹 alert + `return false, reason` 三件事一起做）。
+另有自研 `utils/mylog.lua`；`hs.logger` 已经全仓库绝迹了，别再引入。给用户看的反馈用带 emoji 的 `hs.alert.show`（✅ ❌ ⚠️ 🔄 🔚 🔊 👆），失败一律走 `window_control.lua` 的私有 `fail()`（打日志 + 弹 alert + `return false, reason` 三件事一起做）。
 
 **注释和 commit**：注释用中文、标识符用英文。分隔块用 `-- ────` 或 `-- ====`，文档块用 `@param name type 说明` / `@return`。注释里常带 emoji（⭐ ✅ ❌ ⚠️ 🔑 ⏱ 🧪）。commit message 中文为主，前缀混用 `feat:` / `fix:` / `优化:` / `layout:`。
 
