@@ -74,15 +74,22 @@ local function isPlausibleEpoch(sec)
   return sec >= EPOCH_MIN and sec <= os.time() + 365 * 24 * 3600
 end
 
--- 10 位（秒）或 13 位（毫秒）数字串 → "yyyy/mm/dd hh:mm:ss[.mmm] UTC"
+-- 取时间戳的小数部分：13 位取后 3 位，"10 位.1~3 位" 取小数点后，纯 10 位返回 nil
+local function fractionOf(ts)
+  local frac = ts:match("^%d%d%d%d%d%d%d%d%d%d%.?(%d*)$")
+  if frac and frac ~= "" then return frac end
+end
+
+-- 10 位（秒）/ 13 位（毫秒）/ 10 位.1~3 位小数 → "yyyy/mm/dd hh:mm:ss[.xxx] UTC"
 local function formatUtc(digits)
   local sec = tonumber(digits:sub(1, 10))
   local s = os.date("!%Y/%m/%d %H:%M:%S", sec)
-  if #digits == 13 then s = s .. "." .. digits:sub(11, 13) end
+  local frac = fractionOf(digits)
+  if frac then s = s .. "." .. frac end
   return s .. " UTC"
 end
 
--- 同上，但换成 tz 时区的本地时间 → "yyyy/mm/dd hh:mm:ss[.mmm] UTC+10 (AEST)"
+-- 同上，但换成 tz 时区的本地时间 → "yyyy/mm/dd hh:mm:ss[.xxx] UTC+10 (AEST)"
 -- ⭐ 交给 macOS 的 /bin/date + TZ 环境变量去算，夏令时由系统时区库判断，不自己写规则
 -- @param tz string  IANA 时区名，如 "Australia/Melbourne"
 local function formatInZone(digits, tz)
@@ -91,7 +98,8 @@ local function formatInZone(digits, tz)
   local time, offset, abbr = (out or ""):match("^(.-)|([+-]%d%d%d%d)|(%S+)")
   if not time then return "（" .. tz .. " 时间转换失败）" end
 
-  if #digits == 13 then time = time .. "." .. digits:sub(11, 13) end
+  local frac = fractionOf(digits)
+  if frac then time = time .. "." .. frac end
   -- "+1000" → "UTC+10"，"+0530" → "UTC+5:30"
   local sign, hh, mm = offset:match("([+-])(%d%d)(%d%d)")
   local utcOffset = "UTC" .. sign .. tonumber(hh) .. (mm ~= "00" and (":" .. mm) or "")
@@ -143,9 +151,11 @@ return {
     action = openUrl(URL.HARBINGER),
   },
   {
-    -- UNIX 10 位（秒）/ 13 位（毫秒）时间戳。例：1790204980
+    -- UNIX 10 位（秒）/ 13 位（毫秒）/ 10 位加 1~3 位小数 时间戳。例：1790204980、1790204980.123
     name = "timestamp",
-    match = function(t) if isDigits(t, 10, 13) then return t end end,
+    match = function(t)
+      if isDigits(t, 10, 13) or t:match("^%d%d%d%d%d%d%d%d%d%d%.%d%d?%d?$") then return t end
+    end,
     action = showMessage("时间戳转换", function(t)
       return "UTC:    " .. formatUtc(t) .. "\n"
           .. "墨尔本: " .. formatInZone(t, "Australia/Melbourne")
