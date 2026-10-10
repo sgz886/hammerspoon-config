@@ -7,7 +7,7 @@ local rules = require("modules.clipboard_action_rules")
 
 local M = {}
 
-local COPY_TIMEOUT = 0.6   -- 等 ⌘C 写进剪贴板的最长时间（秒）
+local COPY_TIMEOUT = 0.3   -- 等 ⌘C 写进剪贴板的最长时间（秒）
 
 -- 等剪贴板的两个 timer，存起来防 GC；waitUntil 非 nil 也就是「正在等」的锁
 local copyTimers = {waitUntil = nil, guard = nil}
@@ -51,12 +51,12 @@ end
 -- 读剪贴板 → trim → dispatch
 -- @param emptyMsg string  剪贴板里没有文字时的提示
 local function dispatchClipboard(emptyMsg)
-  local text = trim(hs.pasteboard.getContents() or "")
-  if text == "" then
+  local trimmedText = trim(hs.pasteboard.getContents() or "")
+  if trimmedText == "" then
     hs.alert.show(emptyMsg)
     return
   end
-  M.dispatch(text)
+  M.dispatch(trimmedText)
 end
 
 -- ============================================
