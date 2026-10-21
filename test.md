@@ -38,3 +38,7 @@ require("modules.clipboard_action").dispatch("dvvp")            -- 弹选择框
 require("modules.clipboard_action").dispatch("1790204980123")   -- 弹 UTC 时间
 hs.timer.doAfter(3, require("modules.clipboard_action").run)    -- 3 秒内切到别的 App 选中文字
 ```
+terminal里测试 new window
+```bash
+hs -c 'require("utils.browser").openInNewChromeWindow("https://www.google.com")'
+```
