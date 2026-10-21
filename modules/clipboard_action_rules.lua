@@ -125,6 +125,13 @@ for ext in ("lua md txt json log sh zsh py js ts yaml yml toml csv tsv html htm 
   FILE_EXTS[ext] = true
 end
 
+-- 3 位以上的 TLD 只认这些常见通用顶级域名（2 位的当国家域名 .au .cn 放行）
+-- ⭐ 不能只看长度：cloudwatch.describealarms 这种 API 名也是「字母.字母」
+local GENERIC_TLDS = {}
+for tld in ("com net org edu gov mil int info biz name pro mobi app dev xyz top site online tech cloud store shop blog news live work page"):gmatch("%S+") do
+  GENERIC_TLDS[tld] = true
+end
+
 -- 像网址就原样返回（不补协议，交给 Chrome 处理），否则 nil
 -- 例：https://www.sbs.com.au/、www.sbs.com.au、sbs.com.au/news?x=1、192.168.1.100:6880/#
 local function toWebUrl(t)
@@ -145,7 +152,10 @@ local function toWebUrl(t)
   end
 
   local tld = host:match("%.(%a%a+)$")
-  if not tld or FILE_EXTS[tld:lower()] then return nil end
+  if not tld then return nil end
+  tld = tld:lower()
+  if FILE_EXTS[tld] then return nil end
+  if #tld > 2 and not GENERIC_TLDS[tld] then return nil end
   --return "https://" .. t
   return t
 end
@@ -177,10 +187,10 @@ return {
     action = openUrl(URL.PHONETOOL),
   },
   {
-    -- P / V 开头 + 7~10 位数字。例：P436629647、V2197861578
+    -- 大写字母 开头 + 7~10 位数字。例：P436629647、V2197861578,
     name = "ticket_id",
     match = function(t)
-      local digits = t:match("^[PV](%d+)$")
+      local digits = t:match("^%u(%d+)$")
       if digits and #digits >= 7 and #digits <= 10 then return t end
     end,
     action = openUrl(URL.TICKET),
